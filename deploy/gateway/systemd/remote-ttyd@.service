@@ -1,0 +1,42 @@
+[Unit]
+Description=remote-term web terminal (ttyd) for %i
+Documentation=file:///opt/remote-term/README.md
+After=network.target
+ConditionPathExists=/etc/remote-term/keys/%i
+
+[Service]
+Type=simple
+User=remote-term
+Group=remote-term
+# Listen on a UNIX socket, not a TCP port: ttyd has no login of its own, so only nginx
+# (www-data is in the remote-term group) and remote-term may connect -- other local
+# accounts, including the receiver and oauth2-proxy, cannot reach a terminal.
+# The directory is 0750 and the socket 0770 (UMask), both group remote-term.
+RuntimeDirectory=remote-term-ttyd/%i
+RuntimeDirectoryMode=0750
+# -O: reject WebSocket connections from other origins.  -m 6: at most six terminals per
+# host.  Never add -a: it would let a URL pass arguments to the command.
+ExecStart=/usr/bin/ttyd -i /run/remote-term-ttyd/%i/ttyd.sock -b /%i -W -O -m 6 -t titleFixed=%i -t fontSize=14 /usr/local/bin/remote-ttyd-ssh %i
+Restart=on-failure
+RestartSec=3
+UMask=0007
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

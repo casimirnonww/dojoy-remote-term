@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>DOJOY 服务器终端</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="row">
+      <div class="brand">
+        <strong>DOJOY 服务器终端</strong>
+        <span id="summary">已打开会话：0</span>
+      </div>
+      <button class="btn active" id="overviewBtn" type="button" aria-pressed="true">运行概览</button>
+      <div class="host-tabs" id="hostTabs" role="tablist" aria-label="服务器"></div>
+      <button class="btn" id="reconnectBtn" type="button" title="仅重连当前会话" hidden>重连当前</button>
+    </div>
+    <div class="row" id="sessionRow" hidden>
+      <div class="label">会话</div>
+      <div class="session-tabs" id="sessionTabs" role="tablist" aria-label="会话列表"></div>
+      <button class="btn primary" id="newSessionBtn" type="button">+ 新开终端</button>
+    </div>
+  </header>
+  <main class="workspace" id="workspace">
+    <section class="overview" id="overview" aria-labelledby="overviewTitle">
+      <div class="overview-inner">
+        <div class="overview-heading">
+          <div><h1 id="overviewTitle">运行概览</h1><p class="subtitle">各机每 30 秒上报一次 · 选择一台机器即可打开终端</p></div>
+          <button class="btn" id="refreshStatusBtn" type="button" title="读取服务器收到的最新上报，不会触发额外采集">读取最新</button>
+        </div>
+        <p class="status-notice" id="statusNotice" role="status">正在读取服务器运行情况…</p>
+        <div class="host-grid" id="hostGrid"></div>
+      </div>
+    </section>
+    <div class="empty" id="emptyHint">
+      选择顶部服务器，点「+ 新开终端」可多开会话。
+    </div>
+  </main>
+  <script src="hosts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

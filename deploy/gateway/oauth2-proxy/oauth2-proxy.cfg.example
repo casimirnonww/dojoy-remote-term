@@ -1,0 +1,33 @@
+# oauth2-proxy for remote-term. install_gateway.sh fills in the placeholders and writes
+# /etc/oauth2-proxy/oauth2-proxy.cfg (mode 0640, root:oauth2-proxy). Keep that file secret.
+#
+# Login = GitHub account + that account's two-factor authentication. Turn on 2FA at
+# https://github.com/settings/security before relying on this.
+
+http_address = "127.0.0.1:4180"
+reverse_proxy = true
+# Only nginx on this machine may supply X-Forwarded-* headers.
+trusted_proxy_ips = ["127.0.0.1/32", "::1/128"]
+provider = "github"
+client_id = "@@CLIENT_ID@@"
+client_secret = "@@CLIENT_SECRET@@"
+redirect_url = "https://@@DOMAIN@@/oauth2/callback"
+
+# Only these GitHub accounts may sign in.
+github_users = ["@@GITHUB_USER@@"]
+email_domains = ["*"]
+
+upstreams = ["static://202"]
+skip_provider_button = true
+set_xauthrequest = true
+whitelist_domains = ["@@DOMAIN@@"]
+
+cookie_name = "_remote_term"
+cookie_secret = "@@COOKIE_SECRET@@"
+cookie_secure = true
+cookie_httponly = true
+# "lax" keeps the cookie off cross-site requests (including WebSocket handshakes started by
+# other sites) but still lets the GitHub callback complete; "strict" would break the login.
+cookie_samesite = "lax"
+cookie_expire = "12h"
+cookie_refresh = "0s"

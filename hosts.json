@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "hosts": [
+    {
+      "id": "vps",
+      "name": "VPS",
+      "meta": "入口机",
+      "kind": "linux",
+      "ssh": { "host": "127.0.0.1", "port": 22, "user": "ops" }
+    },
+    {
+      "id": "fa",
+      "name": "财务机",
+      "meta": "fa",
+      "kind": "linux",
+      "ssh": { "host": "39.107.156.205", "port": 22, "user": "ops" }
+    },
+    {
+      "id": "tencent-new",
+      "name": "腾讯新机",
+      "meta": "gg",
+      "kind": "linux",
+      "ssh": { "host": "REPLACE_WITH_TENCENT_NEW_IP", "port": 22, "user": "ops" }
+    },
+    {
+      "id": "tencent-main",
+      "name": "腾讯大总管",
+      "meta": "Chris",
+      "kind": "linux",
+      "ssh": { "host": "REPLACE_WITH_TENCENT_MAIN_IP", "port": 22, "user": "ops" }
+    },
+    {
+      "id": "mbp-dojoy",
+      "name": "另一台 Mac",
+      "meta": "局域网",
+      "kind": "mac",
+      "tunnel": true,
+      "ssh": { "host": "127.0.0.1", "port": 22224, "user": "dojoy" }
+    },
+    {
+      "id": "mac-local",
+      "name": "本机 Mac",
+      "meta": "当前电脑",
+      "kind": "mac",
+      "tunnel": true,
+      "ssh": { "host": "127.0.0.1", "port": 22223, "user": "wanghui" }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+[Unit]
+Description=remote-term status receiver (hosts push metrics, the page reads status.json)
+Documentation=file:///opt/remote-term/README.md
+After=network.target
+
+[Service]
+Type=simple
+User=remote-term-rx
+Group=remote-term-rx
+StateDirectory=remote-term
+StateDirectoryMode=0700
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/remote-term/status/receiver.py --hosts /opt/remote-term/hosts.json --tokens /etc/remote-term/agent-tokens.json serve --state /var/lib/remote-term/state.json --bind 127.0.0.1 --port 8790
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

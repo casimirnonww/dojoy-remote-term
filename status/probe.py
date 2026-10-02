@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read one Linux/macOS host and emit metrics JSON. No target-side files are written."""
+"""Read one Linux/macOS host and emit metrics JSON. Writes no files; needs no privileges."""
 
 import json
 import math
@@ -211,7 +211,7 @@ def mac_metrics():
     }
 
 
-def main():
+def collect_metrics():
     system = platform.system()
     if system == "Linux":
         metrics = linux_metrics()
@@ -232,7 +232,11 @@ def main():
     })
     if not metrics["cpu_cores"] or not metrics["hostname"] or not metrics["arch"]:
         raise ValueError("required metrics unavailable")
-    print(json.dumps(metrics, ensure_ascii=False, allow_nan=False))
+    return metrics
+
+
+def main():
+    print(json.dumps(collect_metrics(), ensure_ascii=False, allow_nan=False))
 
 
 if __name__ == "__main__":
@@ -240,7 +244,7 @@ if __name__ == "__main__":
         raise ProbeDeadline("probe budget exceeded")
 
     try:
-        # Bound work on the target too, even when its SSH transport gets interrupted.
+        # Bound the work so a stuck system command cannot hang the caller.
         signal.signal(signal.SIGALRM, budget_exceeded)
         signal.setitimer(signal.ITIMER_REAL, 7.0)
         main()
