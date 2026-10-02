@@ -27,6 +27,7 @@ gateway=""
 tunnel_port=""
 gateway_hostkey=""
 pubkey=""
+next_steps=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --id) host_id=${2:-}; shift 2 ;;
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
         --tunnel-port) tunnel_port=${2:-}; shift 2 ;;
         --gateway-hostkey) gateway_hostkey=${2:-}; shift 2 ;;
         --pubkey) pubkey=${2:-}; shift 2 ;;
+        --no-next-steps) next_steps=0; shift ;;
         -h | --help) usage ;;
         *) echo "未知参数：$1" >&2; usage ;;
     esac
@@ -170,6 +172,8 @@ if ! nc -z -G 2 127.0.0.1 22 2>/dev/null; then
     echo "并只允许当前用户（$(id -un)）。"
 fi
 
+# Join scripts enroll the keys automatically, so there is nothing to copy by hand.
+[ "$next_steps" -eq 1 ] || exit 0
 echo
 echo "下一步：在入口机上运行（整行复制）："
 echo "  sudo remote-term-admin tunnel-key $host_id $(cut -d' ' -f1,2 "$tunnel_key.pub")"

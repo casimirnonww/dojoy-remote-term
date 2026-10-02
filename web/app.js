@@ -550,6 +550,10 @@ window.addEventListener("pageshow", event => {
   }
 });
 // 首页只读取轻量状态数据；用户选择机器后才建立终端连接。
+// 还有机器没接入时，入口机会生成 join.txt（要登录才能看），这里只负责显示链接。
+fetch("join.txt", { method: "HEAD", cache: "no-store" })
+  .then(response => { document.getElementById("joinLink").hidden = !response.ok; })
+  .catch(() => {});
 showOverview();
 if (HOSTS.length) refreshStatus();
 else statusNotice.textContent = "未读取到机器清单（hosts.js），请检查部署。";

@@ -14,9 +14,11 @@ usage() {
 }
 
 url=""
+token_file=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --url) url=${2:-}; shift 2 ;;
+        --token-file) token_file=${2:-}; shift 2 ;;
         -h | --help) usage ;;
         *) echo "未知参数：$1" >&2; usage ;;
     esac
@@ -33,8 +35,12 @@ python=/usr/bin/python3
 "$python" -c 'import sys; sys.exit(sys.version_info < (3, 7))' 2>/dev/null \
     || { echo "需要 /usr/bin/python3（3.7+）。如提示安装命令行工具，请先安装后重试。" >&2; exit 1; }
 
-read -r -s -p "粘贴上报 token（输入不显示）：" token
-echo
+if [ -n "$token_file" ]; then
+    token=$(tr -d '[:space:]' < "$token_file")
+else
+    read -r -s -p "粘贴上报 token（输入不显示）：" token
+    echo
+fi
 [[ "$token" =~ ^[A-Za-z0-9_-]{20,512}$ ]] || { echo "token 格式不对。" >&2; exit 64; }
 
 dir="$HOME/Library/Application Support/remote-term-agent"

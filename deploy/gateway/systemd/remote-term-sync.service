@@ -1,0 +1,7 @@
+[Unit]
+Description=remote-term: apply host enrollments (pin keys, authorize tunnels, start terminals)
+Documentation=file:///opt/remote-term/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/remote-term-admin sync

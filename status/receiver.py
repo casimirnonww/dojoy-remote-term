@@ -3,12 +3,17 @@
 
 Each host pushes its own metrics with a host-specific bearer token. The gateway
 never logs in to the hosts to collect anything, so it holds no credentials for them.
+
+The same token lets a host enroll once (POST /api/enroll): it hands over its SSH host
+keys (and a Mac its tunnel key). They are only written to the enroll directory here;
+`remote-term-admin sync` (root) validates and applies them.
 """
 
 import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -27,6 +32,9 @@ FRESHNESS = timedelta(seconds=90)
 CLOCK_SKEW = timedelta(seconds=10)
 MAX_BODY_BYTES = 65536
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+PUBLIC_KEY = re.compile(r"^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa) "
+                        r"([A-Za-z0-9+/]{16,8192}={0,3})(?: [\x21-\x7e ]{0,200})?$")
+MAX_HOST_KEYS = 4
 
 NEVER_REPORTED = "尚未收到上报。"
 REPORT_OVERDUE = "超过 90 秒未收到上报。"
@@ -193,6 +201,32 @@ class StatusState:
             }
 
 
+def valid_ip(value):
+    try:
+        return str(ipaddress.ip_address(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def public_key(value):
+    """Return 'type base64' (comment dropped) for a well-formed OpenSSH public key line."""
+    match = PUBLIC_KEY.match(value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError("invalid public key")
+    return f"{match.group(1)} {match.group(2)}"
+
+
+def parse_enrollment(body):
+    payload = json.loads(body.decode("utf-8"))
+    if not isinstance(payload, dict) or set(payload) - {"host_keys", "tunnel_key"}:
+        raise ValueError("unexpected enrollment fields")
+    keys = payload.get("host_keys")
+    if not isinstance(keys, list) or not 1 <= len(keys) <= MAX_HOST_KEYS:
+        raise ValueError("host_keys must list 1-4 keys")
+    tunnel = payload.get("tunnel_key")
+    return [public_key(key) for key in keys], (public_key(tunnel) if tunnel is not None else None)
+
+
 def parse_report(body):
     payload = json.loads(body.decode("utf-8"))
     if not isinstance(payload, dict) or set(payload) - {"metrics", "probe_ms"}:
@@ -236,7 +270,8 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_POST(self):
-        if self._route() != "/api/report":
+        route = self._route()
+        if route not in ("/api/report", "/api/enroll"):
             self._send(404)
             return
         if self.headers.get("Transfer-Encoding"):
@@ -265,6 +300,9 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         body = self.rfile.read(length)
+        if route == "/api/enroll":
+            self._enroll(host_id, body)
+            return
         try:
             metrics, probe_ms = parse_report(body)
         except (ValueError, TypeError, OverflowError, UnicodeDecodeError):
@@ -274,6 +312,21 @@ class Handler(BaseHTTPRequestHandler):
         self.server.state.record_success(host_id, metrics, probe_ms)
         self._send(204)
 
+    def _enroll(self, host_id, body):
+        try:
+            host_keys, tunnel_key = parse_enrollment(body)
+        except (ValueError, TypeError, UnicodeDecodeError):
+            self._send(400)
+            return
+        document = {
+            "host_id": host_id, "host_keys": host_keys, "tunnel_key": tunnel_key,
+            # nginx sets X-Real-IP; the receiver only listens on loopback.
+            "source_ip": valid_ip(self.headers.get("X-Real-IP")),
+            "received_at": format_timestamp(self.server.state.clock()),
+        }
+        atomic_write(self.server.enroll_dir / f"{host_id}.json", document, mode=0o600)
+        self._send(202)
+
     def log_request(self, code="-", size="-"):
         # Successful reads and reports arrive every few seconds; only log what needs attention.
         if isinstance(code, int) and code < 400:
@@ -281,11 +334,12 @@ class Handler(BaseHTTPRequestHandler):
         super().log_request(code, size)
 
 
-def make_server(state, tokens, bind="127.0.0.1", port=8790):
+def make_server(state, tokens, bind="127.0.0.1", port=8790, enroll_dir=None):
     server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
     server.state = state
     server.tokens = tokens
+    server.enroll_dir = Path(enroll_dir or (state.state_path.parent if state.state_path else Path(".")) / "enroll")
     return server
 
 
@@ -298,6 +352,7 @@ def main(argv=None):
     serve.add_argument("--state", type=Path, default=Path("/var/lib/remote-term/state.json"))
     serve.add_argument("--bind", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8790)
+    serve.add_argument("--enroll-dir", type=Path, help="where enrollments go (default: <state dir>/enroll)")
     issue = commands.add_parser("issue-token", help="create or replace a host's report token and print it once")
     issue.add_argument("host_id")
     revoke = commands.add_parser("revoke-token", help="remove a host's report token")
@@ -321,7 +376,7 @@ def main(argv=None):
             return 1
         return 0
 
-    server = make_server(StatusState(hosts, args.state), tokens, args.bind, args.port)
+    server = make_server(StatusState(hosts, args.state), tokens, args.bind, args.port, args.enroll_dir)
     print(f"remote-term receiver listening on {args.bind}:{args.port}", file=sys.stderr, flush=True)
     try:
         server.serve_forever()
