@@ -110,10 +110,6 @@ class AdminHelperTests(unittest.TestCase):
                                                "restrict ssh-ed25519 C remote-term-tunnel-mac-local"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class JoinTests(unittest.TestCase):
     def setUp(self):
         self.hosts = {host["id"]: host for host in load_hosts(REPO / "hosts.json")}
@@ -182,3 +178,78 @@ class AddressTests(unittest.TestCase):
         result = admin.replace_host_lines(text, "fa", ["fa ssh-ed25519 NEW", "fa ecdsa-sha2-nistp256 NEW2"])
         self.assertEqual(result.splitlines(), ["vps ssh-ed25519 KEEP", "fa ssh-ed25519 NEW",
                                                "fa ecdsa-sha2-nistp256 NEW2"])
+
+
+FAKE_CURL = r"""#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$OUT/curl.argv"
+if [[ " $* " == *" -K - "* ]]; then cat >> "$OUT/curl.config"; fi
+cat "$FAKE_TGZ"
+"""
+FAKE_INSTALL = r"""#!/usr/bin/env bash
+{ printf '%s\n' "$@"; env; } > "$OUT/install.log"
+"""
+
+
+class BootstrapTests(unittest.TestCase):
+    """deploy/bootstrap.sh with a stub curl: the token reaches GitHub only through curl's stdin."""
+
+    TOKEN = "github_pat_11TESTONLY0123456789abcdefXYZ"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)])
+        self.out = self.tmp / "out"
+        self.out.mkdir()
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        for name, body in (("curl", FAKE_CURL), ("id", "#!/bin/sh\necho 0\n")):
+            (bin_dir / name).write_text(body)
+            (bin_dir / name).chmod(0o755)
+        package = self.tmp / "pkg" / "owner-repo-abc123" / "deploy" / "gateway"
+        package.mkdir(parents=True)
+        (package / "install_gateway.sh").write_text(FAKE_INSTALL)
+        (package / "install_gateway.sh").chmod(0o755)
+        self.tgz = self.tmp / "fake.tgz"
+        with tarfile.open(self.tgz, "w:gz") as archive:
+            archive.add(self.tmp / "pkg" / "owner-repo-abc123", arcname="owner-repo-abc123")
+        self.env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "OUT": str(self.out),
+                    "FAKE_TGZ": str(self.tgz), "DOJOY_SOURCE": str(self.tmp / "src")}
+
+    def run_bootstrap(self, **extra):
+        return subprocess.run(["bash", str(REPO / "deploy" / "bootstrap.sh")], env=dict(self.env, **extra),
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+    def test_token_goes_only_to_curl_stdin(self):
+        result = self.run_bootstrap(DOJOY_GITHUB_TOKEN=self.TOKEN)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = (self.out / "curl.argv").read_text()
+        self.assertIn("https://api.github.com/repos/casimirnonww/dojoy-remote-term/tarball/main", argv)
+        self.assertIn("-L\n", argv)
+        self.assertNotIn(self.TOKEN, argv)
+        self.assertEqual((self.out / "curl.config").read_text(),
+                         f'header = "Authorization: Bearer {self.TOKEN}"\n')
+        install = (self.out / "install.log").read_text()
+        self.assertIn("--github-user\ncasimirnonww\n", install)
+        self.assertNotIn(self.TOKEN, install)
+        self.assertNotIn("DOJOY_GITHUB_TOKEN", install)
+        self.assertTrue((self.tmp / "src" / "deploy" / "gateway" / "install_gateway.sh").exists())
+
+    def test_without_token_downloads_the_public_tarball(self):
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.out / "curl.argv").read_text().splitlines()[-1],
+                         "https://codeload.github.com/casimirnonww/dojoy-remote-term/tar.gz/refs/heads/main")
+        self.assertFalse((self.out / "curl.config").exists())
+
+    def test_malformed_token_is_refused_before_any_download(self):
+        result = self.run_bootstrap(DOJOY_GITHUB_TOKEN='abc"\nheader = "X: y')
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((self.out / "curl.argv").exists())
+
+    def test_readme_shows_the_same_one_line_command(self):
+        line = re.search(r"#   (read -rsp .*unset T)$", (REPO / "deploy" / "bootstrap.sh").read_text(), re.M).group(1)
+        self.assertIn(f"```\n{line}\n```", (REPO / "README.md").read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()
