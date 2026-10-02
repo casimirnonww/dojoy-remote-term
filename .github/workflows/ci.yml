@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is what macOS ships as /usr/bin/python3; the gateway runs Ubuntu 24.04's 3.12.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Status tests (probe, agent, receiver)
+        run: python -m unittest discover -s status -v
+      - name: Deploy tests (render_config, remote-term-admin)
+        run: python -m unittest discover -s deploy -v
+      - name: web/hosts.js matches hosts.json
+        run: python deploy/render_config.py --check-web web/hosts.js
+
+  config:
+    name: Lint and config checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nginx and ttyd
+        run: sudo apt-get update -q && sudo apt-get install -y -q nginx ttyd
+      - name: JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check web/hosts.js
+      - name: shellcheck
+        run: shellcheck deploy/*/*.sh deploy/gateway/remote-ttyd-ssh
+      - name: nginx -t on the rendered gateway config
+        run: |
+          out=$(mktemp -d)
+          python3 deploy/render_config.py --domain djai.djscz.com --out "$out" --allow-placeholders
+          live=/etc/letsencrypt/live/djai.djscz.com
+          sudo mkdir -p "$live"
+          sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+            -subj /CN=djai.djscz.com -keyout "$live/privkey.pem" -out "$live/fullchain.pem"
+          sudo rm -f /etc/nginx/sites-enabled/default
+          sudo cp "$out/nginx/remote-term.conf" /etc/nginx/sites-enabled/remote-term.conf
+          sudo nginx -t
+      - name: systemd units
+        run: |
+          units=$(mktemp -d)
+          cp deploy/gateway/systemd/*.service deploy/agent/remote-term-agent.* "$units/"
+          mv "$units/remote-ttyd@.service" "$units/remote-ttyd@vps.service"
+          # The oauth2-proxy binary is downloaded by install_gateway.sh; stand in for it here.
+          sudo install -m 755 /bin/true /usr/local/bin/oauth2-proxy
+          cd "$units" && systemd-analyze verify --man=no ./*.service ./*.timer

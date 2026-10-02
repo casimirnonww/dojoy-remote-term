@@ -1,0 +1,39 @@
+[Unit]
+Description=remote-term web terminal (ttyd) for %i
+Documentation=file:///opt/remote-term/README.md
+After=network.target
+ConditionPathExists=/etc/remote-term/ttyd/%i.env
+ConditionPathExists=/etc/remote-term/keys/%i
+
+[Service]
+Type=simple
+User=remote-term
+Group=remote-term
+EnvironmentFile=/etc/remote-term/ttyd/%i.env
+# -i lo: loopback only, nginx is the only way in.  -O: reject WebSocket connections from
+# other origins.  -m 6: at most six terminals per host.  Never add -a: it would let a URL
+# pass arguments to the command.
+ExecStart=/usr/bin/ttyd -i lo -p ${TTYD_PORT} -b /%i -W -O -m 6 -t titleFixed=%i -t fontSize=14 /usr/local/bin/remote-ttyd-ssh %i
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

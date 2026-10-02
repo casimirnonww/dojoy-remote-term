@@ -1,0 +1,27 @@
+[Unit]
+Description=Report this host's metrics to remote-term (outbound HTTPS only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# A throwaway unprivileged user per run: the agent needs no account and no privileges.
+DynamicUser=yes
+EnvironmentFile=/etc/remote-term-agent.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/remote-term-agent/agent.py
+TimeoutStartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=64M

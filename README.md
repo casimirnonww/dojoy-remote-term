@@ -1,91 +1,98 @@
 # DOJOY 服务器终端（六机）
 
-自建的多机运维入口：一个静态 HTML 页面，通过既有 nginx + basic auth + ttyd + SSH，把六台机器的终端收敛到一个网址。附带一个只读的运行状态采集器（systemd timer，每30 秒写一次 `status.json`）。
+一个网页，随时查看 6 台机器的运行状态，并能直接在网页里打开终端。
 
-**入口**：https://djai.djscz.com/
-**备援**：https://104.248.208.183:18443/
-
->仓库为私有。里面含内网/公网主机地址、SSH 别名与nginx 配置片段，仅供本人留档，**不要公开分发，也不要用来直接覆盖任何生产环境**。
+> 仓库为私有，含主机地址与配置结构。**不要公开分发。**
 
 ---
 
-## ⚠️ 当前状态（2026-10-02 实测）
+## ⚠️ 当前状态（2026-10-02）
 
-**网页和状态采集还活着，但六路终端入口已停用。** 这不是故障，是 2026-09-13 安全事件的处置结果。
+- **旧系统必须下线。** 旧 VPS（104.248.208.183）在 2026-09-13 发生 root 失陷，至今**没有重装**。它上面仍在运行旧页面和旧采集器，这台机器已经不可信。
+- **本仓库已改为新架构，还没有部署。** 部署步骤（含事件补充处置）见 **[docs/恢复手册.md](docs/恢复手册.md)**，请按顺序执行。
+- 旧版材料已移到 [archive/2026-09-06/](archive/2026-09-06/)，仅作留档，不要复用。
 
-实测结论：
+---
 
-| 项目 | 状态 | 证据 |
+## 新架构
+
+```
+浏览器 ──HTTPS──▶ nginx（只认 djai.djscz.com；用 IP 访问时直接拒绝 TLS 握手）
+                   │  每个请求先过 oauth2-proxy：GitHub 登录 + 该账号的二次验证，只放行指定用户
+                   ├─ /、app.js、hosts.js ……   静态页面（严格 CSP）
+                   ├─ /status.json            ─▶ receiver（127.0.0.1:8790）
+                   ├─ /<机器>/                ─▶ ttyd（127.0.0.1，-O 校验来源，每台最多 6 个）
+                   │                               └─ ssh：每台机器单独一把钥匙，登录 ops（非 root）
+                   └─ /api/report（不走登录）  ─▶ receiver：每台机器各一个 token
+各台机器：agent 以低权限每 30 秒把指标“推”给入口（只出不进）
+两台 Mac：反向隧道登录入口机的 tunnel 账户（只能转发、只能监听自己的端口）
+```
+
+| | 旧版（已废弃） | 新版 |
 |---|---|---|
-| nginx 站点与登录保护 | 正常 | 主域名与备援入口均返回 `401`（要登录，属正常） |
-| 页面 `index.html` | 在位 | `/var/www/remote-term/index.html`，2026-09-06 部署 |
-| 状态采集 timer | **active** | `remote-term-status.timer`，每 30 秒刷新 |
-| `status.json` | **在更新** | `generated_at` 为当天，VPS 一路 `online` |
-| 六路 `remote-ttyd@*` | **全部不存在** | `systemctl list-units "remote-ttyd@*"` 返回空 |
-| 终端监听端口 | 只剩 `7681` | `7685`/`7686`/`22223`/`22224` 均无监听 |
+| 网站登录 | 一个 Basic Auth 密码 | GitHub 登录 + 二次验证，只放行指定账号 |
+| 终端登录身份 | 各机 **root** | 各机 `ops`，sudo **必须输密码** |
+| 入口到各机的钥匙 | 一把共用 `id_ed25519_mesh` | 每台一把，`restrict,pty`（不能做任何转发） |
+| WebSocket 来源校验 | 无 | ttyd `-O`，nginx 再校验一次 |
+| 状态采集 | 入口 root 登录各机执行代码 | 各机主动上报，入口不持有登录各机的凭据 |
+| Mac 隧道 | 以 root 登录 VPS | 专用 `tunnel` 账户：没有 shell，只能监听自己的端口 |
+| 公网暴露 | 443 + 18443（IP 直连）+ 免登录路由 | 只有 443/80，必须用域名访问 |
+| 能否靠仓库重建 | 不能 | 能：`install_gateway.sh` 一次装好 |
 
-`status.json` 里除VPS 外五路自 2026-09-13 起持续为 `unreachable`，与处置记录一致。
-
-原因见 2026-09-13 安全事件报告：VPS 与另外三台云机发生 root 权限失陷，处置时**主动停止并禁用了六个 `remote-ttyd@*.service`**，作为遏制措施。
-
-**恢复边界（重要）**：报告明确写了「禁止为了恢复网页终端而重新开放全网或恢复失陷私钥授权」。所以恢复终端不是`systemctl start` 一下的事，前置条件是凭据轮换与干净系统重建。完整口径见 `01_五机终端/总报告_五机选机页.md` 与安全事件原件（原件不在本仓库，仅存本机受限目录）。
-
----
-
-## 六个入口
-
-| 标签 | SSH 别名 | 网站路径 | 说明 |
-|---|---|---|---|
-| VPS | hermes-vps | `/vps/` | 网站就在这台，当前唯一 `online` |
-| 财务机 | fa | `/aliyun-new/` | 只改了显示名，旧路径保留 |
-| 腾讯新机 | tencent-new | `/tencent-new/` | 原路 |
-| 腾讯大总管 | tencent-main | `/tencent-main/` | 原路 |
-| 另一台 Mac | mbp-dojoy | `/mbp-dojoy/` | 家里局域网，靠反向隧道 |
-| 本机 Mac | mac-local | `/mac-local/` | 复用既有反向隧道 |
-
-页面里 `HOSTS` 数组是这六项的唯一真源，改机器就改那里。
-
----
-
-## 怎么用
-
-- 默认进入**运行概览**，不会自动开终端连接。选一台机器才会建立会话。
-- 打开终端后左侧是终端、右侧保留运行概览并自动刷新；切机器会定位到对应状态卡，其他机器已开的会话不受影响。点「运行概览」回全宽概览。
-- 「+ 新开终端」继续开会话，每台最多 6 个；「×」关闭；「重连当前」重建当前连接。
-- 状态里的「在线」只代表最近一次采集成功，**不代表某个浏览器终端还连着**。
-
----
+**入口机再次失陷时**：攻击者最多拿到各机 `ops` 和两台 Mac 用户账户的 shell。sudo 还要密码，入口机上也没有各机的 root 凭据。
 
 ## 目录结构
 
 ```
-01_五机终端/
-  01_选机页/        单文件页面（index.html）+ nginx 片段 + VPS SSH 别名 + ttyd 配置
-  02_mbp-dojoy隧道/ 反向隧道 LaunchAgent 与 SSH 片段（不含私钥）
-  03_运行状态/      probe.py、collect_status.py、systemd service/timer + 离线行为测试
-  总报告_五机选机页.md
-  本机接入验收_20260906.md / 运行状态部署验收_20260906.md / 部署记录_20260906.md / 验证结果.md
-raw/五机终端_20260906/   历次部署与验收回执（JSON）+ 一次性部署脚本
-审查报告_五机选机页_20260906.md
+hosts.json                机器清单的唯一真源（id、名称、终端端口、SSH 地址与用户）
+web/                      页面：index.html + app.js + app.css；hosts.js 由 hosts.json 生成
+status/                   probe.py（采集）、agent.py（上报）、receiver.py（接收并提供 status.json）
+                          hosts_config.py、status_schema.py（共用校验）、tests/
+deploy/render_config.py   由 hosts.json 生成 nginx、ttyd、ssh_config、hosts.js
+deploy/gateway/           入口机：install_gateway.sh、remote-term-admin、nginx 模板、systemd、sshd、oauth2-proxy
+deploy/target/            目标机：setup_ops_user.sh（Linux）、setup_mac.sh（Mac）
+deploy/agent/             上报程序安装：install_agent_linux.sh、install_agent_macos.sh、systemd unit
+docs/恢复手册.md           从事件处置到逐台接入、验收的完整步骤
+archive/2026-09-06/       旧版报告、回执与配置（已失效）
 ```
 
-## 技术要点
+## 怎么用
 
-- 没有前端框架、构建步骤、数据库，也没有常驻 Web API。把 `index.html` 丢进 nginx 就能跑。
-- 采集器是纯 Python 标准库。Linux 读 `/proc/stat`（约 0.3 秒增量），macOS 用 `top` 第二次样本（约 1 秒）。网速取同一采样窗口内默认网卡的字节差除以单调时钟实测间隔，取不到就返回 `null`，**不用零补齐**。
-- 采集最多 3 台并发、每台 8 秒超时、探针约 7 秒预算、单周期上限 25 秒。远端探针通过 SSH 标准输入交给对端已有的 `python3` 执行，**不在目标机安装任何东西**。
-- 某台失败时保留上次成功指标和 `last_success_at`，同时标记不可达；首次即失败则指标为空。超过 90 秒没有新鲜数据就标「过期」，历史读数不会继续冒充在线。
-- 页面与 `status.json` 都走同目录临时文件 + 原子替换。页面和采集脚本更新后都要读回核对。
+- 打开 https://djai.djscz.com/ ，用 GitHub 登录。默认显示运行概览，不会自动打开终端。
+- 选一台机器即可打开终端：左边是终端，右边是运行概览。「+ 新开终端」最多 6 个，「×」关闭，「重连当前」重建连接。
+- 有终端开着时，刷新或关闭页面会先让你确认，因为断开会挂断远端正在运行的前台程序。长任务请放进 `tmux`。
+- 状态里的「在线」表示该机最近 90 秒内上报成功，**不代表某个终端还连着**。
+- 登录有效期 12 小时；过期后刷新页面重新登录。
 
-## 部署注意
+## 日常维护（入口机上）
 
-`01_选机页/` 和 `02_mbp-dojoy隧道/` 里的 nginx、SSH、ttyd、LaunchAgent 片段**沿用原包，只供参考**：
+| 要做什么 | 命令 |
+|---|---|
+| 查看每台机器的接入进度 | `sudo remote-term-admin list` |
+| 增删改机器 | 改 `hosts.json` → 运行 `deploy/render_config.py --write-web web/hosts.js` → 提交 → 入口机更新代码后执行 `sudo remote-term-admin apply` |
+| 轮换某台机器的终端钥匙 | `sudo remote-term-admin keygen <id> --force`，再到目标机重新运行 `setup_ops_user.sh` |
+| 轮换或作废上报 token | `sudo remote-term-admin token <id>` / `revoke-token <id>` |
+| 停用某台机器的终端 | `sudo remote-term-admin disable <id>` |
+| 更新代码 | 拉取新代码后重跑 `install_gateway.sh`（可重复执行，保留密钥、token 和证书） |
+| 日志 | `journalctl -u remote-ttyd@<id> -u remote-term-receiver -u oauth2-proxy -u nginx` |
 
-- 不含完整服务模板、wrapper 和全部 ttyd 配置，**没法靠这个包重建** `remote-ttyd@*.service`。
-- **不要整包覆盖到服务器。** 包内不含2026-09-06 本机接入的全部生产配置。
-- 生产路径、回滚备份目录和分步上线方式写在 `01_五机终端/总报告_五机选机页.md`，动手前先读那份。
-- 纯静态页面替换通常不需要重启 nginx 或 ttyd；改了采集脚本要跑一次并读回 JSON。
+## 开发与测试
 
-## 安全说明
+```bash
+python3 -m unittest discover -s status      # 采集、上报、接收（需 Python 3.9+；agent/probe 兼容 3.7+）
+python3 -m unittest discover -s deploy      # 配置生成与 remote-term-admin 辅助函数
+python3 deploy/render_config.py --check-web web/hosts.js
+node --check web/app.js
+shellcheck deploy/*/*.sh deploy/gateway/remote-ttyd-ssh
+```
 
-本仓库**不含任何私钥、口令或token**，已做模式扫描确认。涉及凭证的只有主机**公钥**（`known_host`）、SHA256 指纹和 `~/.ssh/` 下的**路径引用**。即便如此，因为含主机地址与配置结构，仍按私有仓库对待。
+CI（`.github/workflows/ci.yml`）会运行以上全部检查，并用自签证书对生成的 nginx 配置执行 `nginx -t`。
+
+## 已知限制与剩余风险
+
+- **GitHub 账号就是登录入口**：必须开启二次验证。账号被盗就能打开终端，但拿到 root 仍需要 `ops` 的 sudo 密码。
+- 入口机失陷能拿到 `ops` 和两台 Mac 用户账户的 shell（不是 root），Mac 账户里有个人数据。
+- 登录过期后，已打开的终端 iframe 会被重定向到 GitHub 并被拦截，需要刷新页面。
+- 两台 Mac 只在用户登录、未休眠、能连到入口机时可用。
+- 页面里原来的「知识库」（`/knowledge/`），以及 Hermes 等旧 VPS 上的其他服务，不在本仓库范围内，重建时需另行处理。
+- CPU 与网速是短窗口采样（Linux 约 0.3 秒，macOS 约 1 秒），不是 30 秒平均值；Mac 的内存是 `vm_stat` 估计值；磁盘只统计根文件系统。

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Started by ttyd (as the unprivileged "remote-term" user) for every browser terminal:
+# connect to exactly one allowlisted host, with that host's own key and pinned host key.
+set -eu
+
+host_id=${1:-}
+case "$host_id" in
+    '' | *[!a-z0-9-]*)
+        echo "无效的机器标识。" >&2
+        exit 64
+        ;;
+esac
+if ! grep -qxF -- "$host_id" /etc/remote-term/aliases; then
+    echo "机器 $host_id 不在允许列表中。" >&2
+    exit 64
+fi
+exec /usr/bin/ssh -F /etc/remote-term/ssh_config -tt -- "$host_id"

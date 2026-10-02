@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""remote-term gateway administration: per-host keys, report tokens, pinned host keys, tunnels.
+
+Run as root on the gateway. Typical order for one host:
+  remote-term-admin keygen fa          # print the line to put in ops' authorized_keys on fa
+  remote-term-admin token fa           # print fa's report token (shown once)
+  remote-term-admin hostkey fa ssh-ed25519 AAAA...   # pin fa's SSH host key
+  remote-term-admin enable fa          # test SSH, then start fa's web terminal
+"""
+
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+HOME = Path(os.environ.get("REMOTE_TERM_HOME", "/opt/remote-term"))
+ETC = Path(os.environ.get("REMOTE_TERM_ETC", "/etc/remote-term"))
+WWW = Path(os.environ.get("REMOTE_TERM_WWW", "/var/www/remote-term"))
+NGINX_AVAILABLE = Path("/etc/nginx/sites-available/remote-term.conf")
+NGINX_ENABLED = Path("/etc/nginx/sites-enabled/remote-term.conf")
+NGINX_DEFAULT = Path("/etc/nginx/sites-enabled/default")
+TTYD_USER = "remote-term"
+RECEIVER_STATUS_URL = "http://127.0.0.1:8790/status.json"
+KEY_TYPES = {"ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa"}
+WEB_FILES = ("index.html", "app.js", "app.css")
+
+sys.path.insert(0, str(HOME / "status"))
+sys.path.insert(0, str(HOME / "deploy"))
+from hosts_config import HostsConfigError, load_hosts, placeholders  # noqa: E402
+
+
+class AdminError(Exception):
+    pass
+
+
+# ---------- pure helpers (unit-tested) ----------
+
+def parse_public_key(text):
+    """Return (type, base64) from 'type base64 [comment]', optionally preceded by options."""
+    words = text.strip().split()
+    for index, word in enumerate(words):
+        if word in KEY_TYPES:
+            if index + 1 >= len(words):
+                break
+            key_type, blob = word, words[index + 1]
+            try:
+                raw = base64.b64decode(blob, validate=True)
+                (length,) = struct.unpack(">I", raw[:4])
+                embedded = raw[4:4 + length].decode("ascii")
+            except (ValueError, struct.error, UnicodeDecodeError):
+                raise AdminError("公钥内容无法解析。") from None
+            if embedded != key_type:
+                raise AdminError("公钥类型与内容不一致。")
+            return key_type, blob
+    raise AdminError("没有找到有效的 SSH 公钥（应形如 ssh-ed25519 AAAA...）。")
+
+
+def terminal_key_line(host_id, key_type, blob):
+    # restrict: no port/agent/X11 forwarding; pty: still allow an interactive terminal.
+    return f"restrict,pty {key_type} {blob} remote-term-{host_id}"
+
+
+def tunnel_key_line(host, key_type, blob):
+    return (f'restrict,port-forwarding,permitlisten="127.0.0.1:{host["ssh_port"]}" '
+            f"{key_type} {blob} remote-term-tunnel-{host['id']}")
+
+
+def replace_tagged_line(text, tag, line):
+    """Drop lines whose last word is tag (or that start with tag for known_hosts) and append line."""
+    kept = [existing for existing in text.splitlines()
+            if existing.strip() and existing.split()[-1] != tag and existing.split()[0] != tag]
+    return "\n".join(kept + [line]) + "\n"
+
+
+def known_hosts_line(host_id, key_type, blob):
+    return f"{host_id} {key_type} {blob}"
+
+
+# ---------- system helpers ----------
+
+def run(argv, check=True, **kwargs):
+    return subprocess.run(argv, check=check, text=True, **kwargs)
+
+
+def write_file(path, content, mode=0o644, owner=None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + ".")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        os.chmod(temporary, mode)
+        if owner:
+            shutil.chown(temporary, *owner)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def read_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def hosts_by_id():
+    try:
+        return {host["id"]: host for host in load_hosts(HOME / "hosts.json")}
+    except HostsConfigError as error:
+        raise AdminError(f"hosts.json 无效：{error}") from None
+
+
+def get_host(host_id):
+    host = hosts_by_id().get(host_id)
+    if host is None:
+        raise AdminError(f"hosts.json 里没有 {host_id}。")
+    return host
+
+
+def fingerprint(key_type, blob):
+    result = run(["ssh-keygen", "-lf", "-"], input=f"{key_type} {blob}\n", capture_output=True)
+    return result.stdout.strip()
+
+
+def key_path(host_id):
+    return ETC / "keys" / host_id
+
+
+def pinned(host_id):
+    return any(line.split()[:1] == [host_id] for line in read_text(ETC / "known_hosts").splitlines())
+
+
+def systemctl(*args, check=True):
+    return run(["systemctl", *args], check=check, capture_output=True)
+
+
+# ---------- commands ----------
+
+def cmd_keygen(args):
+    get_host(args.host_id)
+    path = key_path(args.host_id)
+    if path.exists() and not args.force:
+        print(f"{path} 已存在；如要轮换密钥请加 --force。当前公钥行：", file=sys.stderr)
+    else:
+        for stale in (path, path.with_name(path.name + ".pub")):
+            stale.unlink(missing_ok=True)
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"remote-term-{args.host_id}", "-f", str(path)])
+        shutil.chown(path, TTYD_USER, TTYD_USER)
+        os.chmod(path, 0o600)
+    cmd_pubkey(args)
+
+
+def cmd_pubkey(args):
+    pub = key_path(args.host_id).with_name(args.host_id + ".pub")
+    if not pub.exists():
+        raise AdminError(f"还没有 {args.host_id} 的密钥，先运行 keygen。")
+    key_type, blob = parse_public_key(pub.read_text())
+    print(terminal_key_line(args.host_id, key_type, blob))
+
+
+def cmd_token(args):
+    get_host(args.host_id)
+    from receiver import TokenStore
+    token = TokenStore(ETC / "agent-tokens.json").issue(args.host_id)
+    print(token)
+    print(f"这是 {args.host_id} 的上报 token，只显示这一次；旧 token 已失效。", file=sys.stderr)
+
+
+def cmd_revoke_token(args):
+    from receiver import TokenStore
+    if not TokenStore(ETC / "agent-tokens.json").revoke(args.host_id):
+        raise AdminError(f"{args.host_id} 没有 token。")
+    print(f"{args.host_id} 的上报 token 已作废。")
+
+
+def cmd_hostkey(args):
+    get_host(args.host_id)
+    key_type, blob = parse_public_key(" ".join(args.key))
+    path = ETC / "known_hosts"
+    write_file(path, replace_tagged_line(read_text(path), args.host_id,
+                                         known_hosts_line(args.host_id, key_type, blob)))
+    print(f"已固定 {args.host_id} 的主机公钥：{fingerprint(key_type, blob)}")
+    print("请与目标机上 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 的输出逐字比对。")
+
+
+def cmd_tunnel_key(args):
+    host = get_host(args.host_id)
+    if not host["tunnel"]:
+        raise AdminError(f"{args.host_id} 在 hosts.json 里不是隧道机器（tunnel: true）。")
+    key_type, blob = parse_public_key(" ".join(args.key))
+    path = ETC / "tunnel_authorized_keys"
+    write_file(path, replace_tagged_line(read_text(path), f"remote-term-tunnel-{args.host_id}",
+                                         tunnel_key_line(host, key_type, blob)))
+    print(f"已授权 {args.host_id} 的隧道公钥，只能监听 127.0.0.1:{host['ssh_port']}：{fingerprint(key_type, blob)}")
+
+
+def ssh_check(host_id):
+    probe = "id -un; sudo -n true 2>/dev/null && echo SUDO_NOPASSWD || echo SUDO_NEEDS_PASSWORD"
+    result = run(["runuser", "-u", TTYD_USER, "--", "/usr/bin/ssh", "-F", str(ETC / "ssh_config"),
+                  host_id, probe], check=False, capture_output=True, timeout=30)
+    return result.returncode, result.stdout.split()
+
+
+def cmd_check(args):
+    host = get_host(args.host_id)
+    problems = []
+    if host["ssh_host"].startswith("REPLACE"):
+        problems.append("hosts.json 里还是占位地址")
+    if not key_path(args.host_id).exists():
+        problems.append("还没有生成密钥（keygen）")
+    if not pinned(args.host_id):
+        problems.append("还没有固定主机公钥（hostkey）")
+    if problems:
+        raise AdminError(f"{args.host_id}：" + "；".join(problems) + "。")
+    code, words = ssh_check(args.host_id)
+    if code != 0 or not words:
+        raise AdminError(f"{args.host_id}：SSH 登录测试失败（退出码 {code}）。检查目标机的 authorized_keys、"
+                         "防火墙，以及隧道是否已连上。")
+    user, sudo = words[0], words[-1]
+    if sudo == "SUDO_NOPASSWD":
+        raise AdminError(f"{args.host_id}：用户 {user} 执行 sudo 不需要密码。请先改为需要密码，"
+                         "否则入口机一旦失陷就等于拿到 root。")
+    print(f"{args.host_id}：SSH 正常，登录用户 {user}，sudo 需要密码。")
+
+
+def cmd_enable(args):
+    if not args.skip_check:
+        cmd_check(args)
+    systemctl("enable", "--now", f"remote-ttyd@{args.host_id}.service")
+    print(f"已启用 {args.host_id} 的网页终端。")
+
+
+def cmd_disable(args):
+    systemctl("disable", "--now", f"remote-ttyd@{args.host_id}.service", check=False)
+    print(f"已停用 {args.host_id} 的网页终端。")
+
+
+def cmd_list(args):
+    try:
+        with urllib.request.urlopen(RECEIVER_STATUS_URL, timeout=3) as response:
+            reports = {row["id"]: row for row in json.load(response)["hosts"]}
+    except (OSError, ValueError, KeyError):
+        reports = {}
+    try:
+        token_ids = set(json.loads(read_text(ETC / "agent-tokens.json") or "{}").get("tokens", {}))
+    except (ValueError, AttributeError):
+        token_ids = set()
+    print(f"{'机器':<14}{'密钥':<6}{'主机公钥':<10}{'token':<7}{'终端':<10}上报状态")
+    for host_id, host in hosts_by_id().items():
+        active = systemctl("is-active", f"remote-ttyd@{host_id}.service", check=False).stdout.strip() or "?"
+        report = reports.get(host_id, {}).get("status", "?")
+        address = "（占位地址）" if host["ssh_host"].startswith("REPLACE") else ""
+        has_key = "有" if key_path(host_id).exists() else "无"
+        has_pin = "已固定" if pinned(host_id) else "未固定"
+        has_token = "有" if host_id in token_ids else "无"
+        print(f"{host_id:<14}{has_key:<6}{has_pin:<10}{has_token:<7}{active:<10}{report}{address}")
+
+
+def cmd_apply(args):
+    import render_config
+    domain = read_text(ETC / "domain").strip()
+    if not domain:
+        raise AdminError(f"缺少 {ETC / 'domain'}；请先运行 install_gateway.sh。")
+    hosts = list(hosts_by_id().values())
+    files = render_config.render_all(hosts, domain)
+    write_file(NGINX_AVAILABLE, files.pop("nginx/remote-term.conf"))
+    if not NGINX_ENABLED.is_symlink():
+        NGINX_ENABLED.unlink(missing_ok=True)
+        NGINX_ENABLED.symlink_to(NGINX_AVAILABLE)
+    if NGINX_DEFAULT.is_symlink():
+        NGINX_DEFAULT.unlink()
+    write_file(ETC / "ssh_config", files.pop("ssh_config"))
+    write_file(ETC / "aliases", files.pop("aliases"))
+    write_file(WWW / "hosts.js", files.pop("web/hosts.js"))
+    for name in WEB_FILES:
+        write_file(WWW / name, (HOME / "web" / name).read_text(encoding="utf-8"))
+    wanted = set()
+    for relative, content in files.items():
+        write_file(ETC / relative, content)
+        wanted.add(Path(relative).name)
+    for stale in (ETC / "ttyd").glob("*.env"):
+        if stale.name not in wanted:
+            stale.unlink()
+            print(f"hosts.json 已删除 {stale.stem}：请运行 remote-term-admin disable {stale.stem}", file=sys.stderr)
+    pending = placeholders(hosts)
+    if pending:
+        print("这些机器在 hosts.json 里还是占位地址，终端暂不可用：" + "、".join(pending), file=sys.stderr)
+    certificate = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
+    if certificate.exists():
+        run(["nginx", "-t"], capture_output=True)
+        systemctl("reload-or-restart", "nginx")
+    else:
+        print(f"还没有 {domain} 的证书，nginx 未重新加载。", file=sys.stderr)
+    systemctl("try-restart", "remote-term-receiver.service", check=False)
+    print("配置已生成并安装。")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="remote-term-admin", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    def add(name, handler, help_text, host=True, key=False):
+        command = commands.add_parser(name, help=help_text)
+        if host:
+            command.add_argument("host_id")
+        if key:
+            command.add_argument("key", nargs="+", help="public key, e.g. ssh-ed25519 AAAA... [comment]")
+        command.set_defaults(handler=handler)
+        return command
+
+    add("list", cmd_list, "show every host's setup state", host=False)
+    add("apply", cmd_apply, "render hosts.json into nginx/ttyd/ssh config and install it", host=False)
+    add("keygen", cmd_keygen, "create this host's terminal key and print its authorized_keys line") \
+        .add_argument("--force", action="store_true", help="replace an existing key (rotation)")
+    add("pubkey", cmd_pubkey, "print this host's authorized_keys line again")
+    add("token", cmd_token, "create or rotate this host's report token (printed once)")
+    add("revoke-token", cmd_revoke_token, "invalidate this host's report token")
+    add("hostkey", cmd_hostkey, "pin this host's SSH host public key", key=True)
+    add("tunnel-key", cmd_tunnel_key, "authorize a Mac's reverse-tunnel public key", key=True)
+    add("check", cmd_check, "test SSH from the terminal account and refuse passwordless sudo")
+    add("enable", cmd_enable, "check, then start this host's web terminal") \
+        .add_argument("--skip-check", action="store_true")
+    add("disable", cmd_disable, "stop this host's web terminal")
+    args = parser.parse_args(argv)
+
+    if os.geteuid() != 0:
+        print("请用 root 运行（sudo remote-term-admin ...）。", file=sys.stderr)
+        return 2
+    try:
+        args.handler(args)
+    except AdminError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as error:
+        lines = (error.stderr or "").strip().splitlines()
+        detail = [line for line in lines if "emerg" in line or "error" in line.lower()] or lines[-1:]
+        print(f"命令失败：{' '.join(error.cmd[:2])}", *detail[:3], sep="\n  ", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
