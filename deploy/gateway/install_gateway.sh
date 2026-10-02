@@ -2,7 +2,7 @@
 # Install the remote-term gateway on a FRESHLY REINSTALLED Ubuntu 24.04 server.
 #
 #   sudo ./deploy/gateway/install_gateway.sh --domain djai.djscz.com \
-#        --github-user <your GitHub username> --email <you@example.com>
+#        --github-user casimirnonww --email <you@example.com>
 #
 # Before running (see docs/恢复手册.md):
 #   * the domain's DNS points at this server and ports 80/443 are reachable;
