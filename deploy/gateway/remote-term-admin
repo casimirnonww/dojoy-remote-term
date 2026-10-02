@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """remote-term gateway administration: per-host keys, report tokens, pinned host keys, tunnels.
 
-Run as root on the gateway. Typical order for one host:
+Run as root on the gateway. Easiest: `remote-term-admin join fa` prints one command to
+paste on fa; once fa has run it and enrolled, `sync` (run automatically) pins its keys and
+starts its web terminal. Manual order, if you prefer:
   remote-term-admin keygen fa          # print the line to put in ops' authorized_keys on fa
   remote-term-admin token fa           # print fa's report token (shown once)
   remote-term-admin hostkey fa ssh-ed25519 AAAA...   # pin fa's SSH host key
@@ -10,14 +12,20 @@ Run as root on the gateway. Typical order for one host:
 
 import argparse
 import base64
+from datetime import datetime, timezone
+import io
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import secrets
+import shlex
 import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 
@@ -31,6 +39,18 @@ TTYD_USER = "remote-term"
 RECEIVER_STATUS_URL = "http://127.0.0.1:8790/status.json"
 KEY_TYPES = {"ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa"}
 WEB_FILES = ("index.html", "app.js", "app.css")
+ENROLL_DIR = Path(os.environ.get("REMOTE_TERM_ENROLL", "/var/lib/remote-term/enroll"))
+JOIN_DIR = Path(os.environ.get("REMOTE_TERM_JOIN", "/var/lib/remote-term-join"))
+GATEWAY_HOSTKEY = Path("/etc/ssh/ssh_host_ed25519_key.pub")
+NGINX_GROUP = "www-data"
+# Everything a joining host runs, packed into its join script so it needs nothing else
+# (hosts in mainland China often cannot reach GitHub).
+JOIN_BUNDLE = (
+    "status/agent.py", "status/probe.py",
+    "deploy/agent/install_agent_linux.sh", "deploy/agent/install_agent_macos.sh",
+    "deploy/agent/remote-term-agent.service", "deploy/agent/remote-term-agent.timer",
+    "deploy/target/setup_ops_user.sh", "deploy/target/setup_mac.sh",
+)
 
 sys.path.insert(0, str(HOME / "status"))
 sys.path.insert(0, str(HOME / "deploy"))
@@ -84,6 +104,129 @@ def known_hosts_line(host_id, key_type, blob):
     return f"{host_id} {key_type} {blob}"
 
 
+def replace_host_lines(text, host_id, lines):
+    """Replace every known_hosts line for host_id with lines (a host may offer several key types)."""
+    kept = [line for line in text.splitlines() if line.strip() and line.split()[0] != host_id]
+    return "\n".join(kept + list(lines)) + "\n"
+
+
+def apply_address_overrides(hosts, overrides):
+    """Fill placeholder ssh.host values from overrides {id: address}; real addresses always win."""
+    for host in hosts:
+        address = overrides.get(host["id"])
+        if host["ssh_host"].startswith("REPLACE") and isinstance(address, str):
+            try:
+                host["ssh_host"] = str(ipaddress.ip_address(address))
+            except ValueError:
+                pass
+    return hosts
+
+
+def parse_ssh_g_hostname(output, alias):
+    """From `ssh -G alias` output, the configured HostName, or None if the alias is unknown."""
+    for line in output.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "hostname":
+            value = value.strip()
+            try:
+                return str(ipaddress.ip_address(value))
+            except ValueError:
+                return None if value == alias else value
+    return None
+
+
+def build_bundle(home):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for relative in JOIN_BUNDLE:
+            info = archive.gettarinfo(str(Path(home) / relative), arcname=relative)
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            with open(Path(home) / relative, "rb") as handle:
+                archive.addfile(info, handle)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+JOIN_TEMPLATE = r"""#!/bin/bash
+# DOJOY 服务器终端：接入 @@NAME@@（@@ID@@）。由 remote-term-admin join 生成，只能用一次。
+set -euo pipefail
+HOST_ID=@@Q_ID@@
+HOST_NAME=@@Q_NAME@@
+KIND=@@Q_KIND@@
+SSH_USER=@@Q_USER@@
+GATEWAY=@@Q_DOMAIN@@
+REPORT_URL=@@Q_REPORT_URL@@
+ENROLL_URL=@@Q_ENROLL_URL@@
+TOKEN=@@Q_TOKEN@@
+TERMINAL_KEY=@@Q_TERMINAL_KEY@@
+PASSWORD_HASH=@@Q_PASSWORD_HASH@@
+GATEWAY_HOSTKEY=@@Q_GATEWAY_HOSTKEY@@
+TUNNEL_PORT=@@Q_TUNNEL_PORT@@
+BUNDLE=@@Q_BUNDLE@@
+
+if [ "$KIND" = linux ] && [ "$(id -u)" -ne 0 ]; then
+    echo "需要管理员权限，如果提示输入密码，请输入这台机器当前账户的密码。"
+    exec sudo bash "$0" "$@"
+fi
+if [ "$KIND" = mac ]; then
+    if [ "$(id -u)" -eq 0 ]; then echo "请不要加 sudo，用 $SSH_USER 账户直接运行。" >&2; exit 1; fi
+    if [ "$(id -un)" != "$SSH_USER" ]; then echo "请在 $SSH_USER 账户下运行（当前是 $(id -un)）。" >&2; exit 1; fi
+fi
+command -v python3 >/dev/null || { echo "这台机器没有 python3，请先安装后重试。" >&2; exit 1; }
+
+work=$(mktemp -d)
+cleanup() {
+    rm -rf "$work"
+    # The script holds this host's token: remove it once it has run.
+    case "$0" in /tmp/dojoy-join*.sh) rm -f -- "$0" ;; esac
+}
+trap cleanup EXIT
+printf '%s' "$BUNDLE" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))'     | tar -xzf - -C "$work"
+
+echo "== 正在接入 $HOST_NAME（$HOST_ID）=="
+if [ "$KIND" = linux ]; then
+    bash "$work/deploy/target/setup_ops_user.sh" --id "$HOST_ID" --pubkey "$TERMINAL_KEY"         --password-hash "$PASSWORD_HASH" >/dev/null
+    echo "已建立 ops 账户（sudo 密码就是安装入口机时设的 ops 密码）。"
+    printf '%s
+' "$TOKEN" | bash "$work/deploy/agent/install_agent_linux.sh" --url "$REPORT_URL" --token-stdin
+    REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 python3 "$work/status/agent.py" --enroll --url "$ENROLL_URL"
+else
+    bash "$work/deploy/target/setup_mac.sh" --id "$HOST_ID" --gateway "$GATEWAY" --tunnel-port "$TUNNEL_PORT"         --gateway-hostkey "$GATEWAY_HOSTKEY" --pubkey "$TERMINAL_KEY" --no-next-steps
+    (umask 077 && printf '%s
+' "$TOKEN" > "$work/token")
+    bash "$work/deploy/agent/install_agent_macos.sh" --url "$REPORT_URL" --token-file "$work/token"
+    cafile=()
+    if [ -r /etc/ssl/cert.pem ]; then cafile=(--cafile /etc/ssl/cert.pem); fi
+    REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 "$work/status/agent.py" --enroll         --url "$ENROLL_URL" --tunnel-key "$HOME/.ssh/id_ed25519_remote_term_tunnel.pub" ${cafile[@]+"${cafile[@]}"}
+fi
+echo
+echo "完成：$HOST_NAME 已接入。大约 1 分钟后，在网页上就能看到它的状态并打开终端。"
+"""
+
+
+def build_join_script(host, domain, token, terminal_key, bundle, password_hash="", gateway_hostkey=""):
+    values = {
+        "ID": host["id"], "NAME": host["name"], "KIND": host["kind"], "USER": host["ssh_user"],
+        "DOMAIN": domain, "REPORT_URL": f"https://{domain}/api/report",
+        "ENROLL_URL": f"https://{domain}/api/enroll", "TOKEN": token, "TERMINAL_KEY": terminal_key,
+        "PASSWORD_HASH": password_hash, "GATEWAY_HOSTKEY": gateway_hostkey,
+        "TUNNEL_PORT": str(host["ssh_port"]) if host["tunnel"] else "", "BUNDLE": bundle,
+    }
+    text = JOIN_TEMPLATE
+    for key, value in values.items():
+        text = text.replace(f"@@Q_{key}@@", shlex.quote(value))
+    # Names only appear in the comment line; strip anything that could end it.
+    text = text.replace("@@NAME@@", re.sub(r"[\r\n]", " ", host["name"])).replace("@@ID@@", host["id"])
+    if "@@" in text:
+        raise ValueError("unrendered placeholder in join script")
+    return text
+
+
+def join_command(domain, secret):
+    url = f"https://{domain}/join/{secret}.sh"
+    return f"curl -fsSLo /tmp/dojoy-join.sh '{url}' && bash /tmp/dojoy-join.sh"
+
+
 # ---------- system helpers ----------
 
 def run(argv, check=True, **kwargs):
@@ -113,11 +256,21 @@ def read_text(path):
         return ""
 
 
+def read_json(path, default):
+    try:
+        return json.loads(read_text(path) or "null") or default
+    except ValueError:
+        return default
+
+
 def hosts_by_id():
     try:
-        return {host["id"]: host for host in load_hosts(HOME / "hosts.json")}
+        hosts = load_hosts(HOME / "hosts.json")
     except HostsConfigError as error:
         raise AdminError(f"hosts.json 无效：{error}") from None
+    # Addresses learned at run time (old ssh config, enrollment source IP) fill placeholders.
+    apply_address_overrides(hosts, read_json(ETC / "addresses.json", {}))
+    return {host["id"]: host for host in hosts}
 
 
 def get_host(host_id):
@@ -146,17 +299,22 @@ def systemctl(*args, check=True):
 
 # ---------- commands ----------
 
+def generate_key(host_id):
+    path = key_path(host_id)
+    for stale in (path, path.with_name(path.name + ".pub")):
+        stale.unlink(missing_ok=True)
+    run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"remote-term-{host_id}", "-f", str(path)])
+    shutil.chown(path, TTYD_USER, TTYD_USER)
+    os.chmod(path, 0o600)
+
+
 def cmd_keygen(args):
     get_host(args.host_id)
     path = key_path(args.host_id)
     if path.exists() and not args.force:
         print(f"{path} 已存在；如要轮换密钥请加 --force。当前公钥行：", file=sys.stderr)
     else:
-        for stale in (path, path.with_name(path.name + ".pub")):
-            stale.unlink(missing_ok=True)
-        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"remote-term-{args.host_id}", "-f", str(path)])
-        shutil.chown(path, TTYD_USER, TTYD_USER)
-        os.chmod(path, 0o600)
+        generate_key(args.host_id)
     cmd_pubkey(args)
 
 
@@ -266,6 +424,185 @@ def cmd_list(args):
         print(f"{host_id:<14}{has_key:<6}{has_pin:<10}{has_token:<7}{active:<10}{report}{address}")
 
 
+# ---------- one-paste joining ----------
+
+def domain_name():
+    domain = read_text(ETC / "domain").strip()
+    if not domain:
+        raise AdminError(f"缺少 {ETC / 'domain'}；请先运行 install_gateway.sh。")
+    return domain
+
+
+def ensure_key(host_id):
+    if not key_path(host_id).exists():
+        generate_key(host_id)
+    key_type, blob = parse_public_key(key_path(host_id).with_name(host_id + ".pub").read_text())
+    return terminal_key_line(host_id, key_type, blob)
+
+
+def joins():
+    return read_json(ETC / "joins.json", {})
+
+
+def save_joins(data):
+    write_file(ETC / "joins.json", json.dumps(data, ensure_ascii=False, indent=2) + "\n", mode=0o600)
+
+
+def remove_join(host_id):
+    data = joins()
+    entry = data.pop(host_id, None)
+    if entry:
+        (JOIN_DIR / f"{entry['secret']}.sh").unlink(missing_ok=True)
+        save_joins(data)
+
+
+def enrolled(host_id):
+    return pinned(host_id) and systemctl("is-enabled", f"remote-ttyd@{host_id}.service",
+                                         check=False).stdout.strip() == "enabled"
+
+
+def make_join(host, domain, force=False):
+    """Create (or reuse) this host's one-time join script; return the command to paste."""
+    data = joins()
+    entry = data.get(host["id"])
+    if entry and not force and (JOIN_DIR / f"{entry['secret']}.sh").exists():
+        return join_command(domain, entry["secret"])
+    password_hash = read_text(ETC / "ops-password.hash").strip()
+    if host["kind"] == "linux" and not password_hash:
+        raise AdminError("缺少 ops 密码哈希；请重新运行 install_gateway.sh。")
+    gateway_hostkey = " ".join(read_text(GATEWAY_HOSTKEY).split()[:2])
+    from receiver import TokenStore
+    token = TokenStore(ETC / "agent-tokens.json").issue(host["id"])
+    script = build_join_script(host, domain, token, ensure_key(host["id"]), build_bundle(HOME),
+                               password_hash if host["kind"] == "linux" else "", gateway_hostkey)
+    if entry:
+        (JOIN_DIR / f"{entry['secret']}.sh").unlink(missing_ok=True)
+    secret = secrets.token_hex(16)
+    JOIN_DIR.mkdir(mode=0o750, exist_ok=True)
+    shutil.chown(JOIN_DIR, "root", NGINX_GROUP)
+    write_file(JOIN_DIR / f"{secret}.sh", script, mode=0o640, owner=("root", NGINX_GROUP))
+    data[host["id"]] = {"secret": secret, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    save_joins(data)
+    return join_command(domain, secret)
+
+
+def where_to_paste(host):
+    if host["kind"] == "mac":
+        return f"在这台 Mac 上用 {host['ssh_user']} 账户打开「终端」App，粘贴下面一整行，回车："
+    return "在这台服务器的网页终端里（云平台控制台的「远程连接 / 登录」），粘贴下面一整行，回车："
+
+
+def cmd_join(args):
+    host = get_host(args.host_id)
+    if host["id"] == "vps":
+        raise AdminError("vps 是入口机本身，install_gateway.sh 已经接好了。")
+    print(make_join(host, domain_name(), args.force))
+
+
+def write_join_page(domain):
+    """The site's join.txt: the commands still waiting to be pasted (behind the login)."""
+    hosts = hosts_by_id()
+    sections = [f"【{hosts[host_id]['name']}（{host_id}）】{where_to_paste(hosts[host_id])}\n"
+                f"{join_command(domain, entry['secret'])}\n"
+                for host_id, entry in joins().items() if host_id in hosts]
+    page = WWW / "join.txt"
+    if not sections:
+        page.unlink(missing_ok=True)
+        return "所有机器都已接入。"
+    text = ("DOJOY 服务器终端：接入其他机器\n\n"
+            "每台机器只需要做一次。每条命令只能用一次，接入成功后自动作废。\n"
+            "粘贴完大约 1 分钟后，回到网页刷新，就能看到这台机器并打开终端。\n\n"
+            + "\n".join(sections))
+    write_file(page, text)
+    return text
+
+
+def cmd_join_all(args):
+    domain = domain_name()
+    for host in hosts_by_id().values():
+        if host["id"] != "vps" and not enrolled(host["id"]):
+            make_join(host, domain)
+    print(write_join_page(domain))
+
+
+def cmd_legacy_ips(args):
+    """Fill placeholder addresses from root's old ~/.ssh/config (the old VPS had these aliases)."""
+    overrides = read_json(ETC / "addresses.json", {})
+    for host in hosts_by_id().values():
+        if not host["ssh_host"].startswith("REPLACE"):
+            continue
+        result = run(["ssh", "-G", host["id"]], check=False, capture_output=True)
+        address = parse_ssh_g_hostname(result.stdout, host["id"]) if result.returncode == 0 else None
+        if address:
+            overrides[host["id"]] = address
+            print(f"{host['id']}：从旧的 SSH 配置读到地址 {address}")
+    write_file(ETC / "addresses.json", json.dumps(overrides, indent=2) + "\n")
+
+
+def try_enable(host_id):
+    try:
+        cmd_check(argparse.Namespace(host_id=host_id))
+    except AdminError as error:
+        print(f"{host_id}：暂时还不能启用终端（{error}），下次自动重试。", file=sys.stderr)
+        return False
+    systemctl("enable", "--now", f"remote-ttyd@{host_id}.service")
+    print(f"{host_id}：已启用网页终端。")
+    return True
+
+
+def cmd_sync(args):
+    """Apply enrollments: pin host keys, authorize Mac tunnel keys, fill addresses, start terminals."""
+    hosts = hosts_by_id()
+    outstanding = joins()
+    pending = set(read_text(ETC / "pending-enable").split())
+    overrides = read_json(ETC / "addresses.json", {})
+    rerender = False
+    for path in sorted(ENROLL_DIR.glob("*.json")) if ENROLL_DIR.exists() else []:
+        host = hosts.get(path.stem)
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if host is None or document.get("host_id") != host["id"]:
+                raise AdminError("登记里的机器不在 hosts.json 中")
+            # Only a host with an unused join link may (re)enroll; a token alone is not enough
+            # to swap the pinned host keys. To re-join on purpose: remote-term-admin join <id> --force
+            if host["id"] not in outstanding:
+                raise AdminError(f"{host['id']} 没有待使用的接入链接，如需重新接入请先运行 join {host['id']} --force")
+            keys = [parse_public_key(key) for key in document.get("host_keys") or []]
+            if not keys:
+                raise AdminError("登记里没有主机公钥")
+            tunnel = parse_public_key(document.get("tunnel_key") or "") if host["tunnel"] else None
+        except (AdminError, ValueError, KeyError, TypeError) as error:
+            rejected = ENROLL_DIR.parent / "enroll-rejected"
+            rejected.mkdir(mode=0o700, exist_ok=True)
+            os.replace(path, rejected / path.name)
+            print(f"{path.stem}：登记无效，已移到 {rejected}（{error}）", file=sys.stderr)
+            continue
+        known = ETC / "known_hosts"
+        write_file(known, replace_host_lines(read_text(known), host["id"],
+                                             [known_hosts_line(host["id"], *key) for key in keys]))
+        if tunnel:
+            authorized = ETC / "tunnel_authorized_keys"
+            write_file(authorized, replace_tagged_line(read_text(authorized), f"remote-term-tunnel-{host['id']}",
+                                                       tunnel_key_line(host, *tunnel)))
+        source_ip = document.get("source_ip")
+        if host["ssh_host"].startswith("REPLACE") and source_ip:
+            overrides[host["id"]] = source_ip
+            rerender = True
+        remove_join(host["id"])
+        path.unlink()
+        pending.add(host["id"])
+        print(f"{host['id']}：已固定主机公钥" + ("、授权隧道" if tunnel else "") + "。")
+    if rerender:
+        write_file(ETC / "addresses.json", json.dumps(overrides, indent=2) + "\n")
+        cmd_apply(argparse.Namespace())
+    for host_id in sorted(pending):
+        if host_id in hosts and try_enable(host_id):
+            pending.discard(host_id)
+    write_file(ETC / "pending-enable", "".join(f"{host_id}\n" for host_id in sorted(pending)))
+    if (WWW / "join.txt").exists():
+        write_join_page(domain_name())
+
+
 def cmd_apply(args):
     import render_config
     domain = read_text(ETC / "domain").strip()
@@ -285,7 +622,8 @@ def cmd_apply(args):
     for name in WEB_FILES:
         write_file(WWW / name, (HOME / "web" / name).read_text(encoding="utf-8"))
     assert not files, f"unhandled rendered files: {sorted(files)}"
-    units = systemctl("list-units", "--plain", "--no-legend", "remote-ttyd@*.service", check=False).stdout
+    units = systemctl("list-units", "--plain", "--no-legend", "--state=active", "remote-ttyd@*.service",
+                      check=False).stdout
     for unit in re.findall(r"remote-ttyd@([a-z0-9-]+)\.service", units):
         if unit not in {host["id"] for host in hosts}:
             print(f"hosts.json 已删除 {unit}：请运行 remote-term-admin disable {unit}", file=sys.stderr)
@@ -329,6 +667,11 @@ def main(argv=None):
     add("enable", cmd_enable, "check, then start this host's web terminal") \
         .add_argument("--skip-check", action="store_true")
     add("disable", cmd_disable, "stop this host's web terminal")
+    add("join", cmd_join, "print a one-time command that connects this host when pasted on it") \
+        .add_argument("--force", action="store_true", help="make a new command (the old one stops working)")
+    add("join-all", cmd_join_all, "join commands for every host not connected yet (also on the site)", host=False)
+    add("sync", cmd_sync, "apply enrollments: pin keys, authorize tunnels, start terminals", host=False)
+    add("legacy-ips", cmd_legacy_ips, "fill placeholder addresses from root's old ~/.ssh/config", host=False)
     args = parser.parse_args(argv)
 
     if os.geteuid() != 0:

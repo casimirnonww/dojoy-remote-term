@@ -1,0 +1,9 @@
+[Unit]
+Description=remote-term: run sync as soon as a host enrolls
+
+[Path]
+DirectoryNotEmpty=/var/lib/remote-term/enroll
+Unit=remote-term-sync.service
+
+[Install]
+WantedBy=multi-user.target

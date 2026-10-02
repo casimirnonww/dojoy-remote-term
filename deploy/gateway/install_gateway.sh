@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Install the remote-term gateway on a FRESHLY REINSTALLED Ubuntu 24.04 server.
+# Install the remote-term gateway on an Ubuntu 24.04 server (fresh, or the old VPS:
+# the old site, collector and terminals are backed up and switched off first).
 #
 #   sudo ./deploy/gateway/install_gateway.sh --domain djai.djscz.com \
-#        --github-user casimirnonww --email <you@example.com>
+#        --github-user casimirnonww [--email <you@example.com>]
+#   (or the one-line deploy/bootstrap.sh, which downloads the code and runs this)
 #
-# Before running (see docs/恢复手册.md):
+# Before running (see README.md):
 #   * the domain's DNS points at this server and ports 80/443 are reachable;
 #   * your GitHub account has two-factor authentication turned on;
-#   * you created a GitHub OAuth App with callback https://<domain>/oauth2/callback and
-#     have its client ID and secret at hand (asked once, on the first run).
+#   * you created a GitHub OAuth App with callback https://<domain>/oauth2/callback.
+# Asked once, on the first run: the OAuth App's client ID and secret, and the ops password
+# (sudo password for ops on every Linux host).
 #
-# Safe to re-run: existing keys, tokens, certificate and oauth2-proxy config are kept.
+# Safe to re-run: keys, tokens, certificate, passwords and oauth2-proxy config are kept.
 set -euo pipefail
 
 OAUTH2_PROXY_VERSION="v7.15.5"
 
 usage() {
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 64
 }
 
@@ -41,7 +44,13 @@ die() { echo "错误：$*" >&2; exit 1; }
 [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
     || die "--domain 必须是完整域名，例如 djai.djscz.com。"
 [[ "$github_user" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || die "--github-user 无效。"
-[[ "$email" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || die "--email 无效（用于 Let's Encrypt 证书通知）。"
+if [ -n "$email" ] && ! [[ "$email" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
+    die "--email 无效（用于 Let's Encrypt 证书到期提醒，可以不填）。"
+fi
+# Questions come from the keyboard even when this runs from a pipe (curl ... | bash).
+if [ ! -t 0 ] && { : </dev/tty; } 2>/dev/null; then
+    exec </dev/tty
+fi
 # shellcheck disable=SC1091
 . /etc/os-release
 [ "${ID:-}" = "ubuntu" ] || die "只支持 Ubuntu（当前：${ID:-unknown}）。"
@@ -55,12 +64,49 @@ PY
 step "安装软件包（nginx、ttyd、certbot）"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q nginx ttyd python3 certbot openssh-server curl ca-certificates
+apt-get install -y -q -o Dpkg::Options::=--force-confold \
+    nginx ttyd python3 certbot openssh-server curl ca-certificates openssl
+
+legacy="/var/backups/remote-term-legacy-$(date +%Y%m%dT%H%M%S)"
+step "停用旧系统（文件备份到 $legacy）"
+# The old collector logged in to every host as root; it must not keep running.
+for unit in remote-term-status.timer remote-term-status.service; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+        systemctl disable --now "$unit" >/dev/null 2>&1 || true
+        echo "已停用旧的 $unit"
+    fi
+done
+# Old terminals under names that are not in hosts.json (e.g. aliyun-new).
+known_ids=" $(python3 -c 'import json,sys; print(" ".join(h["id"] for h in json.load(open(sys.argv[1]))["hosts"]))' "$repo/hosts.json") "
+for unit in $(systemctl list-units --all --plain --no-legend 'remote-ttyd@*' | awk '{print $1}'); do
+    host_id=${unit#remote-ttyd@}
+    host_id=${host_id%.service}
+    case "$known_ids" in
+        *" $host_id "*) ;;
+        *) systemctl disable --now "$unit" >/dev/null 2>&1 || true; echo "已停用旧的 $unit" ;;
+    esac
+done
+# Old nginx sites (Basic Auth entry, port 18443, unauthenticated routes) would clash with ours.
+for site in /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/*; do
+    if [ ! -e "$site" ] && [ ! -L "$site" ]; then
+        continue
+    fi
+    [ "$(basename "$site")" = remote-term.conf ] && continue
+    mkdir -p "$legacy/nginx"
+    mv "$site" "$legacy/nginx/"
+    echo "已移走旧的 nginx 配置 $site"
+done
 
 step "创建系统账户（都没有登录 shell）"
 ensure_user() {
     local name=$1 home=$2
-    if ! id "$name" >/dev/null 2>&1; then
+    if id "$name" >/dev/null 2>&1; then
+        return
+    fi
+    # A group of that name may be left over from an earlier, partial install.
+    if getent group "$name" >/dev/null; then
+        useradd --system --gid "$name" --home-dir "$home" --shell /usr/sbin/nologin "$name"
+    else
         useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin "$name"
     fi
 }
@@ -102,9 +148,34 @@ chown root:remote-term-rx /etc/remote-term/agent-tokens.json
 chmod 640 /etc/remote-term/agent-tokens.json
 printf '%s\n' "$domain" > /etc/remote-term/domain
 install -d -m 755 /var/www/remote-term /var/www/letsencrypt
+install -d -m 750 -o root -g www-data /var/lib/remote-term-join
+
+step "ops 密码（所有 Linux 机器上 ops 的 sudo 密码，只设这一次）"
+hash_file=/etc/remote-term/ops-password.hash
+if [ -s "$hash_file" ]; then
+    echo "已设置过（$hash_file）。"
+else
+    while true; do
+        read -r -s -p "设置 ops 密码（至少 10 位，输入不显示）：" password
+        echo
+        read -r -s -p "再输入一次：" password_again
+        echo
+        if [ "$password" != "$password_again" ]; then
+            echo "两次输入不一致，请重新输入。"
+        elif [ "${#password}" -lt 10 ]; then
+            echo "太短了，至少 10 位。"
+        else
+            break
+        fi
+    done
+    (umask 077 && printf '%s' "$password" | openssl passwd -6 -stdin > "$hash_file")
+    unset password password_again
+    echo "已保存（只保存哈希，不保存密码本身）。"
+fi
 
 step "systemd 服务"
-install -m 644 "$repo"/deploy/gateway/systemd/*.service /etc/systemd/system/
+install -m 644 "$repo"/deploy/gateway/systemd/*.service "$repo"/deploy/gateway/systemd/*.path \
+    "$repo"/deploy/gateway/systemd/*.timer /etc/systemd/system/
 systemctl daemon-reload
 
 step "sshd：只能做反向隧道的 tunnel 账户"
@@ -188,21 +259,32 @@ NGINX
     rm -f /etc/nginx/sites-enabled/default
     nginx -t
     systemctl reload-or-restart nginx
-    certbot certonly --webroot -w /var/www/letsencrypt -d "$domain" --email "$email" \
-        --agree-tos --no-eff-email --non-interactive --deploy-hook "systemctl reload nginx"
+    if [ -n "$email" ]; then
+        contact=(--email "$email" --no-eff-email)
+    else
+        contact=(--register-unsafely-without-email)
+    fi
+    certbot certonly --webroot -w /var/www/letsencrypt -d "$domain" "${contact[@]}" \
+        --agree-tos --non-interactive --deploy-hook "systemctl reload nginx"
 fi
 
 step "生成并安装 nginx / ttyd / SSH 配置"
+# On the old VPS, root's ~/.ssh/config still knows the Tencent hosts' addresses.
+remote-term-admin legacy-ips
 remote-term-admin apply
 
 step "启动服务"
 systemctl enable --now remote-term-receiver.service oauth2-proxy.service nginx.service
+install -d -m 700 -o remote-term-rx -g remote-term-rx /var/lib/remote-term/enroll
+# Hosts enroll themselves; these apply it (pin keys, authorize tunnels, start terminals).
+systemctl enable --now remote-term-sync.path remote-term-sync.timer
 # Restart (not reload) so nginx workers pick up the remote-term group membership.
 systemctl restart nginx
 
 step "入口机自己的终端（vps）：ops 账户 + 专用密钥"
 remote-term-admin keygen vps >/dev/null
-"$repo/deploy/target/setup_ops_user.sh" --id vps --pubkey "$(remote-term-admin pubkey vps)"
+"$repo/deploy/target/setup_ops_user.sh" --id vps --pubkey "$(remote-term-admin pubkey vps)" \
+    --password-hash "$(cat "$hash_file")" >/dev/null
 read -r -a own_key < /etc/ssh/ssh_host_ed25519_key.pub
 remote-term-admin hostkey vps "${own_key[0]}" "${own_key[1]}" >/dev/null
 remote-term-admin enable vps
@@ -215,11 +297,10 @@ else
     echo "已安装（/etc/remote-term-agent.env 存在）。"
 fi
 
+step "其他机器的接入命令"
+remote-term-admin join-all
+
 step "完成"
 echo "网页入口：https://$domain/ （用 GitHub 账号 $github_user 登录）"
-echo
-echo "两台 Mac 运行 setup_mac.sh 时需要的入口机主机公钥（--gateway-hostkey，整段复制）："
-echo "  ${own_key[0]} ${own_key[1]}"
-echo "  指纹：$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2)"
-echo
-echo "接下来按 docs/恢复手册.md 逐台接入其他机器；随时用 sudo remote-term-admin list 查看进度。"
+echo "上面每台机器的接入命令，登录网页后点「接入其他机器」也能看到，方便复制。"
+echo "随时可以运行 sudo remote-term-admin list 查看各台机器的接入情况。"

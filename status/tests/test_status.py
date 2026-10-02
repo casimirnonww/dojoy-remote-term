@@ -27,6 +27,7 @@ METRICS = {
     "disk_total_bytes": 100000, "disk_used_bytes": 40000,
     "uptime_seconds": 123.4, "load_1": 0.5,
 }
+ED25519 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOfjYK2kIUwffyxuDh8gicevgdFkfio49xyfZlNqjwcq"
 HOSTS = [
     {"id": "vps", "name": "VPS"},
     {"id": "fa", "name": "财务机"},
@@ -301,6 +302,34 @@ class ReceiverHttpTests(ReceiverFixture):
         self.assertEqual(self.request("/index.html")[0], 404)
         self.assertEqual(self.request("/status.json", b"{}", {"Content-Type": "application/json"}, "POST")[0], 404)
 
+    def enroll(self, payload, token=None, headers=None):
+        headers = {"Content-Type": "application/json", **(headers or {})}
+        if token is not None:
+            headers["Authorization"] = "Bearer " + token
+        return self.request("/api/enroll", json.dumps(payload).encode(), headers, "POST")[0]
+
+    def test_enrollment_is_stored_for_the_token_owner_only(self):
+        payload = {"host_keys": [ED25519 + " root@fa"], "tunnel_key": None}
+        self.assertEqual(self.enroll(payload, self.token, {"X-Real-IP": "203.0.113.7"}), 202)
+        saved = json.loads((self.root / "enroll" / "fa.json").read_text())
+        self.assertEqual(saved["host_id"], "fa")
+        self.assertEqual(saved["host_keys"], [ED25519])  # comment dropped
+        self.assertIsNone(saved["tunnel_key"])
+        self.assertEqual(saved["source_ip"], "203.0.113.7")
+        self.assertEqual((self.root / "enroll" / "fa.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(path.name for path in (self.root / "enroll").iterdir()), ["fa.json"])
+
+    def test_enrollment_rejects_bad_tokens_and_keys(self):
+        good = {"host_keys": [ED25519]}
+        self.assertEqual(self.enroll(good), 401)
+        self.assertEqual(self.enroll(good, "wrong"), 401)
+        for bad in ({"host_keys": []}, {"host_keys": ["ssh-ed25519 not base64!"]},
+                    {"host_keys": [ED25519 + "\nssh-ed25519 AAAA"]}, {"host_keys": [ED25519] * 5},
+                    {"host_keys": [ED25519], "tunnel_key": "nope"}, {"host_keys": [ED25519], "x": 1}):
+            with self.subTest(bad=str(bad)[:40]):
+                self.assertEqual(self.enroll(bad, self.token), 400)
+        self.assertFalse((self.root / "enroll").exists())
+
     def test_token_file_holds_only_hashes_with_restricted_mode(self):
         content = (self.root / "agent-tokens.json").read_text()
         self.assertNotIn(self.token, content)
@@ -381,6 +410,18 @@ class AgentTests(ReceiverFixture):
         self.assertEqual(code, 1)
         self.assertIn("HTTP 302", stderr)
         self.assertEqual(seen, [])
+
+    def test_agent_enroll_sends_host_and_tunnel_keys(self):
+        host_key = self.root / "ssh_host_ed25519_key.pub"
+        host_key.write_text(ED25519 + " root@host\n")
+        tunnel_key = self.root / "tunnel.pub"
+        tunnel_key.write_text(ED25519 + " remote-term-tunnel-fa\n")
+        code, stderr = self.run_agent("--url", self.base + "/api/enroll", "--enroll",
+                                      "--host-key", str(host_key), "--tunnel-key", str(tunnel_key))
+        self.assertEqual((code, stderr), (0, ""))
+        saved = json.loads((self.root / "enroll" / "fa.json").read_text())
+        self.assertEqual(saved["host_keys"], [ED25519])
+        self.assertEqual(saved["tunnel_key"], ED25519)
 
     def test_plain_http_to_remote_host_is_a_config_error(self):
         code, stderr = self.run_agent("--url", "http://example.com/api/report")

@@ -3,9 +3,12 @@
 
 Runs unprivileged from a systemd timer (Linux) or a LaunchAgent (macOS). The host only
 makes outbound HTTPS requests; nothing on the gateway can log in to it through this path.
+With --enroll it instead sends this host's SSH host keys (and a Mac's tunnel key) once,
+so the gateway can pin them without anyone copying keys by hand.
 """
 
 import argparse
+import glob
 import json
 import os
 from pathlib import Path
@@ -21,6 +24,8 @@ import probe
 
 
 TOTAL_BUDGET_SECONDS = 25
+DEFAULT_HOST_KEYS = ("/etc/ssh/ssh_host_ed25519_key.pub", "/etc/ssh/ssh_host_ecdsa_key.pub",
+                     "/etc/ssh/ssh_host_rsa_key.pub")
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
@@ -60,6 +65,26 @@ def read_token(token_file):
     return token
 
 
+def read_public_key(path):
+    try:
+        words = Path(path).read_text(encoding="utf-8").split()
+    except OSError:
+        raise ConfigError(f"无法读取公钥文件 {path}。") from None
+    if len(words) < 2:
+        raise ConfigError(f"{path} 不是有效的公钥文件。")
+    return words[0] + " " + words[1]
+
+
+def build_enrollment(host_key_files, tunnel_key_file=None):
+    files = list(host_key_files) or [path for path in DEFAULT_HOST_KEYS if glob.glob(path)]
+    if not files:
+        raise ConfigError("找不到本机的 SSH 主机公钥（/etc/ssh/ssh_host_*_key.pub）。")
+    return {
+        "host_keys": [read_public_key(path) for path in files[:4]],
+        "tunnel_key": read_public_key(tunnel_key_file) if tunnel_key_file else None,
+    }
+
+
 def build_report():
     start = time.monotonic()
     metrics = probe.collect_metrics()
@@ -90,6 +115,11 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--print", dest="print_only", action="store_true",
                         help="print the report instead of sending it")
+    parser.add_argument("--enroll", action="store_true",
+                        help="send this host's SSH host keys once instead of metrics (--url .../api/enroll)")
+    parser.add_argument("--host-key", action="append", default=[],
+                        help="host public key file for --enroll (default: /etc/ssh/ssh_host_*_key.pub)")
+    parser.add_argument("--tunnel-key", help="tunnel public key file for --enroll (Macs)")
     args = parser.parse_args(argv)
 
     def budget_exceeded(signum, frame):
@@ -103,6 +133,10 @@ def main(argv=None):
             return 0
         url = check_url(args.url)
         token = read_token(args.token_file)
+        if args.enroll:
+            send_report(url, token, build_enrollment(args.host_key, args.tunnel_key), args.cafile, args.timeout)
+            print("已向入口机登记本机公钥。")
+            return 0
         send_report(url, token, build_report(), args.cafile, args.timeout)
         return 0
     except ConfigError as error:

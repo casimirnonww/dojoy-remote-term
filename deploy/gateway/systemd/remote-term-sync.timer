@@ -1,0 +1,10 @@
+[Unit]
+Description=remote-term: retry starting terminals that were not reachable yet (e.g. a Mac tunnel)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=remote-term-sync.service
+
+[Install]
+WantedBy=timers.target

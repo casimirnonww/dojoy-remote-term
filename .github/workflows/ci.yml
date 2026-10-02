@@ -40,7 +40,7 @@ jobs:
           node --check web/app.js
           node --check web/hosts.js
       - name: shellcheck
-        run: shellcheck deploy/*/*.sh deploy/gateway/remote-ttyd-ssh
+        run: shellcheck deploy/*.sh deploy/*/*.sh deploy/gateway/remote-ttyd-ssh
       - name: nginx -t on the rendered gateway config
         run: |
           out=$(mktemp -d)
@@ -55,8 +55,9 @@ jobs:
       - name: systemd units
         run: |
           units=$(mktemp -d)
-          cp deploy/gateway/systemd/*.service deploy/agent/remote-term-agent.* "$units/"
+          cp deploy/gateway/systemd/* deploy/agent/remote-term-agent.* "$units/"
           mv "$units/remote-ttyd@.service" "$units/remote-ttyd@vps.service"
-          # The oauth2-proxy binary is downloaded by install_gateway.sh; stand in for it here.
+          # Installed by install_gateway.sh; stand in for them here.
           sudo install -m 755 /bin/true /usr/local/bin/oauth2-proxy
-          cd "$units" && systemd-analyze verify --man=no ./*.service ./*.timer
+          sudo install -m 755 /bin/true /usr/local/sbin/remote-term-admin
+          cd "$units" && systemd-analyze verify --man=no ./*.service ./*.path ./*.timer

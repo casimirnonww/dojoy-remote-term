@@ -1,9 +1,13 @@
+import base64
 import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path
+import io
 import re
+import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -54,7 +58,10 @@ class RenderTests(unittest.TestCase):
         # Only the login flow, the 401 helper and the token-checked report endpoint skip login.
         skipped = re.findall(r"location ([^{]+)\{\n\s+auth_request off;", nginx)
         self.assertEqual([location.strip() for location in skipped],
-                         ["/oauth2/", "= /oauth2/auth", "@remote_term_unauthorized", "= /api/report"])
+                         ["/oauth2/", "= /oauth2/auth", "@remote_term_unauthorized", "= /api/report",
+                          "= /api/enroll", "^~ /join/"])
+        self.assertIn("alias /var/lib/remote-term-join/;", nginx)
+        self.assertIn("charset utf-8;", nginx)
 
     def test_ssh_config_never_logs_in_as_root_and_pins_host_keys(self):
         ssh = self.files["ssh_config"]
@@ -105,3 +112,73 @@ class AdminHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JoinTests(unittest.TestCase):
+    def setUp(self):
+        self.hosts = {host["id"]: host for host in load_hosts(REPO / "hosts.json")}
+        self.bundle = admin.build_bundle(REPO)
+        self.key = "restrict,pty " + ED25519 + " remote-term-fa"
+
+    def test_bundle_holds_exactly_the_join_files(self):
+        with tarfile.open(fileobj=io.BytesIO(base64.b64decode(self.bundle)), mode="r:gz") as archive:
+            self.assertEqual(sorted(archive.getnames()), sorted(admin.JOIN_BUNDLE))
+            self.assertTrue(all(member.uid == 0 for member in archive.getmembers()))
+
+    def render(self, host_id, **extra):
+        return admin.build_join_script(self.hosts[host_id], "djai.djscz.com", "tok_en-123", self.key,
+                                       self.bundle, **extra)
+
+    def test_linux_and_mac_scripts_are_valid_bash_with_the_right_values(self):
+        linux = self.render("fa", password_hash="$6$salt$hash")
+        mac = self.render("mac-local", gateway_hostkey=ED25519)
+        for script in (linux, mac):
+            with self.subTest(script=script[:60]):
+                result = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("@@", script)
+                self.assertIn("ENROLL_URL=https://djai.djscz.com/api/enroll", script)
+                self.assertIn("TOKEN=tok_en-123", script)
+        self.assertIn("KIND=linux", linux)
+        self.assertIn("PASSWORD_HASH='$6$salt$hash'", linux)
+        self.assertIn("TUNNEL_PORT=''", linux)
+        self.assertIn("KIND=mac", mac)
+        self.assertIn("SSH_USER=wanghui", mac)
+        self.assertIn("TUNNEL_PORT=22223", mac)
+        self.assertIn("PASSWORD_HASH=''", mac)
+        self.assertIn(f"GATEWAY_HOSTKEY='{ED25519}'", mac)
+
+    def test_values_are_shell_quoted(self):
+        host = dict(self.hosts["fa"], name="x'; rm -rf / #")
+        script = admin.build_join_script(host, "djai.djscz.com", "t", self.key, self.bundle)
+        self.assertIn("HOST_NAME='x'\"'\"'; rm -rf / #'", script)
+        result = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_join_command(self):
+        self.assertEqual(admin.join_command("djai.djscz.com", "ab12"),
+                         "curl -fsSLo /tmp/dojoy-join.sh 'https://djai.djscz.com/join/ab12.sh' && bash /tmp/dojoy-join.sh")
+
+
+class AddressTests(unittest.TestCase):
+    def test_ssh_g_hostname(self):
+        self.assertEqual(admin.parse_ssh_g_hostname("user root\nhostname 192.0.2.5\nport 22\n", "tencent-new"),
+                         "192.0.2.5")
+        # An alias with no Host block resolves to itself: unknown.
+        self.assertIsNone(admin.parse_ssh_g_hostname("hostname tencent-new\n", "tencent-new"))
+        self.assertEqual(admin.parse_ssh_g_hostname("hostname vm.example.com\n", "x"), "vm.example.com")
+
+    def test_overrides_fill_placeholders_only(self):
+        hosts = load_hosts(REPO / "hosts.json")
+        admin.apply_address_overrides(hosts, {"tencent-new": "192.0.2.9", "fa": "192.0.2.1",
+                                              "tencent-main": "not an ip"})
+        by_id = {host["id"]: host["ssh_host"] for host in hosts}
+        self.assertEqual(by_id["tencent-new"], "192.0.2.9")
+        self.assertEqual(by_id["fa"], "39.107.156.205")
+        self.assertTrue(by_id["tencent-main"].startswith("REPLACE"))
+
+    def test_all_host_key_types_are_pinned(self):
+        text = "fa ssh-ed25519 OLD\nvps ssh-ed25519 KEEP\n"
+        result = admin.replace_host_lines(text, "fa", ["fa ssh-ed25519 NEW", "fa ecdsa-sha2-nistp256 NEW2"])
+        self.assertEqual(result.splitlines(), ["vps ssh-ed25519 KEEP", "fa ssh-ed25519 NEW",
+                                               "fa ecdsa-sha2-nistp256 NEW2"])

@@ -2,15 +2,44 @@
 
 一个网页，随时查看 6 台机器的运行状态，并能直接在网页里打开终端。
 
-> 仓库为私有，含主机地址与配置结构。**不要公开分发。**
+> 仓库里没有任何密码或密钥；公开后别人能看到服务器 IP 和配置结构。
 
 ---
 
-## ⚠️ 当前状态（2026-10-02）
+## 上线步骤（照着做即可）
 
-- **旧系统必须下线。** 旧 VPS（104.248.208.183）在 2026-09-13 发生 root 失陷，至今**没有重装**。它上面仍在运行旧页面和旧采集器，这台机器已经不可信。
-- **本仓库已改为新架构，还没有部署。** 部署步骤（含事件补充处置）见 **[docs/恢复手册.md](docs/恢复手册.md)**，请按顺序执行。
-- 旧版材料已移到 [archive/2026-09-06/](archive/2026-09-06/)，仅作留档，不要复用。
+**第 1 步：GitHub（在浏览器里点）**
+1. 开二次验证：打开 https://github.com/settings/security ，按页面提示开启 Two-factor authentication，并**保存好恢复码**。
+2. 建 OAuth App：打开 https://github.com/settings/applications/new ，填写：
+   - Application name：`DOJOY 服务器终端`
+   - Homepage URL：`https://djai.djscz.com`
+   - Authorization callback URL：`https://djai.djscz.com/oauth2/callback`
+
+   点 **Register application**，记下页面上的 **Client ID**；再点 **Generate a new client secret**，记下 **Client secret**（只显示一次）。
+3. 把仓库改成公开：打开 https://github.com/casimirnonww/dojoy-remote-term/settings ，拉到最下面 **Danger Zone** → **Change visibility** → **Make public**，按提示确认。
+
+**第 2 步：VPS（在 DigitalOcean 网页上操作）**
+
+打开 DigitalOcean → Droplets → 点这台 VPS → 右上角 **Console**（网页终端）。粘贴下面一整行，回车：
+```
+curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main/deploy/bootstrap.sh | bash
+```
+过程中会问三样东西：Client ID、Client secret、**ops 密码**。ops 密码只设这一次，所有 Linux 机器用 sudo 时都输它，至少 10 位，请记住。
+
+装完后屏幕上会列出其他 5 台机器各自的「接入命令」。
+
+**第 3 步：其他 5 台机器（每台粘贴一行）**
+- 用自己的电脑打开 https://djai.djscz.com/ ，用 GitHub 登录，点左上角「接入其他机器」，就能看到每台机器要粘贴的那一行。
+- **财务机、腾讯新机、腾讯大总管**：在阿里云或腾讯云控制台打开这台服务器的网页终端（「远程连接」或「登录」），粘贴它那一行，回车。
+- **两台 Mac**：在那台 Mac 上用对应账户（本机 Mac 用 wanghui，另一台用 dojoy）打开「终端」App，粘贴它那一行，回车。Mac 需要开着「系统设置 → 通用 → 共享 → 远程登录」。
+
+每台粘贴完大约 1 分钟，网页上就会显示这台机器「在线」，终端也能直接打开，不用再回 VPS 做任何事。每条接入命令只能用一次，用完自动作废。
+
+**之后**：任何电脑打开 https://djai.djscz.com/ ，用 GitHub 登录即可。终端里登录的是 `ops`，要管理员权限时输入 `sudo` 加 ops 密码。
+
+> ⚠️ 风险提醒（你已知晓）：这台 VPS 在 2026-09-13 被入侵过，这次没有重装。如果入侵者还在里面，他可能看到这台机器上的一切。安装时会先把旧网站、旧采集器和旧终端停用并备份到 `/var/backups/remote-term-legacy-*`（Hermes 和知识库网页也会停）。以后想彻底处理，按 [docs/恢复手册.md](docs/恢复手册.md) 重装即可。
+
+旧版材料已移到 [archive/2026-09-06/](archive/2026-09-06/)，仅作留档，不要复用。
 
 ---
 
@@ -49,8 +78,9 @@ hosts.json                机器清单的唯一真源（id、名称、类型、S
 web/                      页面：index.html + app.js + app.css；hosts.js 由 hosts.json 生成
 status/                   probe.py（采集）、agent.py（上报）、receiver.py（接收并提供 status.json）
                           hosts_config.py、status_schema.py（共用校验）、tests/
+deploy/bootstrap.sh       VPS 上的一行安装：下载代码并运行 install_gateway.sh
 deploy/render_config.py   由 hosts.json 生成 nginx、ttyd、ssh_config、hosts.js
-deploy/gateway/           入口机：install_gateway.sh、remote-term-admin、nginx 模板、systemd、sshd、oauth2-proxy
+deploy/gateway/           入口机：install_gateway.sh、remote-term-admin（含 join / sync 自动接入）、nginx 模板、systemd、sshd、oauth2-proxy
 deploy/target/            目标机：setup_ops_user.sh（Linux）、setup_mac.sh（Mac）
 deploy/agent/             上报程序安装：install_agent_linux.sh、install_agent_macos.sh、systemd unit
 docs/恢复手册.md           从事件处置到逐台接入、验收的完整步骤
@@ -71,7 +101,8 @@ archive/2026-09-06/       旧版报告、回执与配置（已失效）
 |---|---|
 | 查看每台机器的接入进度 | `sudo remote-term-admin list` |
 | 增删改机器 | 改 `hosts.json` → 运行 `deploy/render_config.py --write-web web/hosts.js` → 提交 → 入口机更新代码后执行 `sudo remote-term-admin apply` |
-| 轮换某台机器的终端钥匙 | `sudo remote-term-admin keygen <id> --force`，再到目标机重新运行 `setup_ops_user.sh` |
+| 重新接入某台机器（重装后等） | `sudo remote-term-admin join <id> --force`，把打印的一行粘贴到那台机器上 |
+| 轮换某台机器的终端钥匙 | `sudo remote-term-admin keygen <id> --force`，再 `join <id> --force` 重新接入 |
 | 轮换或作废上报 token | `sudo remote-term-admin token <id>` / `revoke-token <id>` |
 | 停用某台机器的终端 | `sudo remote-term-admin disable <id>` |
 | 更新代码 | 拉取新代码后重跑 `install_gateway.sh`（可重复执行，保留密钥、token 和证书） |

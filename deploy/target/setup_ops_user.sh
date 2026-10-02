@@ -4,6 +4,8 @@
 # Run as root ON THE TARGET HOST (fa, tencent-new, tencent-main, or the gateway itself):
 #   sudo ./setup_ops_user.sh --id fa --pubkey 'restrict,pty ssh-ed25519 AAAA... remote-term-fa'
 # The --pubkey line is what `remote-term-admin keygen <id>` printed on the gateway.
+# --password-hash '$6$...' sets ops' password from a hash (the join scripts pass the one
+# chosen at install time) instead of asking for it.
 #
 # What it does:
 #   * creates the "ops" account (the web terminal logs in as ops, never as root);
@@ -13,16 +15,18 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 64
 }
 
 host_id=""
 pubkey=""
 user="ops"
+password_hash=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --id) host_id=${2:-}; shift 2 ;;
+        --password-hash) password_hash=${2:-}; shift 2 ;;
         --pubkey) pubkey=${2:-}; shift 2 ;;
         --user) user=${2:-}; shift 2 ;;
         -h | --help) usage ;;
@@ -33,6 +37,10 @@ done
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行。" >&2; exit 1; }
 [[ "$host_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { echo "--id 无效。" >&2; exit 64; }
 [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$user" != "root" ]] || { echo "--user 无效。" >&2; exit 64; }
+if [ -n "$password_hash" ] && ! [[ "$password_hash" =~ ^\$(6|5|y)\$[./A-Za-z0-9$]+$ ]]; then
+    echo "--password-hash 无效（应为 \$6\$ 开头的哈希）。" >&2
+    exit 64
+fi
 
 # Accept the full line from remote-term-admin or a bare "type base64 [comment]" key.
 key_type=""
@@ -77,7 +85,10 @@ if grep -rEqs "^[^#]*\b$user\b.*NOPASSWD" /etc/sudoers /etc/sudoers.d; then
     echo "警告：sudoers 里有 $user 的 NOPASSWD 规则，请删除；remote-term-admin enable 会拒绝启用。" >&2
 fi
 password_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
-if [ "$password_state" != "P" ]; then
+if [ -n "$password_hash" ]; then
+    usermod -p "$password_hash" "$user"
+    echo "已设置 $user 的密码（sudo 时输入安装入口机时设的 ops 密码）。"
+elif [ "$password_state" != "P" ]; then
     if [ -t 0 ]; then
         echo "请为 $user 设置密码（sudo 时要输入，不要和其他机器相同）："
         passwd "$user"
