@@ -1,0 +1,16 @@
+[Unit]
+Description=Collect five-host terminal runtime status
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/usr/local/lib/remote-term-status
+ExecStart=/usr/bin/python3 /usr/local/lib/remote-term-status/collect_status.py --probe /usr/local/lib/remote-term-status/probe.py --output /var/www/remote-term/status.json
+TimeoutStartSec=25
+KillMode=control-group
+UMask=0022
+StandardOutput=journal
+StandardError=journal

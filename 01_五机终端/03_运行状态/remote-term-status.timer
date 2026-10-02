@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh five-host terminal status every 30 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=remote-term-status.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+{
+  "html_sha256": "ce26f6b16c66f2ea3ca4ff2a689a8c32b5ae43a23ebcb1551e94f772bb9dc044",
+  "nginx": {
+    "MainPID": "2273109",
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "ttyd": {
+    "vps": "active",
+    "aliyun-new": "active",
+    "tencent-new": "active",
+    "tencent-main": "active",
+    "mbp-dojoy": "active"
+  },
+  "open_file_cache_directives": [],
+  "backup_exists": true,
+  "all_checks": "PASS"
+}

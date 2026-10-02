@@ -1,0 +1,1 @@
+TTYD_OPTIONS=-i lo -p 7685 -b /mbp-dojoy -W -s 15 -t titleFixed=mbp-dojoy -t fontSize=14 /usr/local/bin/remote-ttyd-ssh mbp-dojoy

@@ -1,0 +1,41 @@
+{
+  "method": "ttyd HTTP and WebSocket over temporary loopback SSH forwards; hostname then exit",
+  "results": [
+    {
+      "alias": "vps",
+      "ttyd_http": 200,
+      "websocket": true,
+      "hostname_command": true,
+      "hostname": "ubuntu-s-2vcpu-2gb-sfo2"
+    },
+    {
+      "alias": "fa",
+      "ttyd_http": 200,
+      "websocket": true,
+      "hostname_command": true,
+      "hostname": "fa"
+    },
+    {
+      "alias": "tencent-new",
+      "ttyd_http": 200,
+      "websocket": true,
+      "hostname_command": true,
+      "hostname": "VM-0-3-ubuntu"
+    },
+    {
+      "alias": "tencent-main",
+      "ttyd_http": 200,
+      "websocket": true,
+      "hostname_command": true,
+      "hostname": "VM-0-4-ubuntu"
+    },
+    {
+      "alias": "mbp-dojoy",
+      "ttyd_http": 200,
+      "websocket": true,
+      "hostname_command": true,
+      "hostname": "MacBookPro"
+    }
+  ],
+  "ssh_tunnel_stopped": true
+}

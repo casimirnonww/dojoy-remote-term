@@ -1,0 +1,40 @@
+{
+  "phase": "status_collector_installed",
+  "backup": "/var/backups/remote-term/20260906T020251Z-status",
+  "installed_hashes": {
+    "collect_status.py": "e8e825437b5f1524e9de2b5ebe383fef64484585ab7bc7246db8c6632b55f278",
+    "remote-term-status.service": "feec61986762b25727ed1f2b3885623c9486a3675cd9f9f2a1aafb91270a7ebd",
+    "remote-term-status.timer": "9ee6011fdcae07654234a3c26b80f2ce2b0f55ab007602ae5d288d615486f791",
+    "probe.py": "5d627d39e42b9101893e7fd99fa729f464bb20422453f65aaae65748d85d12dc"
+  },
+  "service": {
+    "Result": "success",
+    "ExecMainStatus": "0",
+    "MemoryPeak": "[not set]",
+    "CPUUsageNSec": "911703000"
+  },
+  "timer_active": "active",
+  "snapshot_generated_at": "2026-09-06T02:03:00Z",
+  "hosts": [
+    {
+      "id": "vps",
+      "status": "online"
+    },
+    {
+      "id": "fa",
+      "status": "online"
+    },
+    {
+      "id": "tencent-new",
+      "status": "online"
+    },
+    {
+      "id": "tencent-main",
+      "status": "online"
+    },
+    {
+      "id": "mbp-dojoy",
+      "status": "online"
+    }
+  ]
+}

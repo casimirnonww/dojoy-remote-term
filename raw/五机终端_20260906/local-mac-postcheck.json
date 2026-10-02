@@ -1,0 +1,36 @@
+{
+  "previous": "2026-09-06T05:00:01Z",
+  "current": "2026-09-06T05:02:38Z",
+  "updated": true,
+  "hosts": [
+    {
+      "id": "vps",
+      "status": "online"
+    },
+    {
+      "id": "fa",
+      "status": "online"
+    },
+    {
+      "id": "tencent-new",
+      "status": "online"
+    },
+    {
+      "id": "tencent-main",
+      "status": "online"
+    },
+    {
+      "id": "mbp-dojoy",
+      "status": "online"
+    },
+    {
+      "id": "mac-local",
+      "status": "online"
+    }
+  ],
+  "mac_cpu": "Apple M1 Max",
+  "mac_cores": 10,
+  "mac_memory_bytes": 68719476736,
+  "service": "Result=success\nExecMainStatus=0\nCPUUsageNSec=1006304000\n",
+  "bindings": "LISTEN 0      4096       127.0.0.1:7686       0.0.0.0:*          \nLISTEN 0      128        127.0.0.1:22223      0.0.0.0:*          "
+}

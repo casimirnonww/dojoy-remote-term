@@ -1,0 +1,10 @@
+# mbp-dojoy → hermes-vps reverse tunnel (2026-09-06)
+Host hermes-vps
+  HostName 104.248.208.183
+  User root
+  IdentityFile ~/.ssh/id_ed25519_hermes_reverse
+  IdentitiesOnly yes
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  StrictHostKeyChecking accept-new
+  ExitOnForwardFailure yes

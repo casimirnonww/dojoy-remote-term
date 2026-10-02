@@ -1,0 +1,55 @@
+{
+  "deployed_at": "2026-09-06T05:00:02.006498+00:00",
+  "backup": "/var/backups/remote-term/20260906T045943Z-local-mac",
+  "identity": {
+    "hostname": "MacBook-Pro1-4.local",
+    "user": "wanghui",
+    "model": "MacBookPro18,2",
+    "arch": "arm64"
+  },
+  "html_sha256": "b30a0a1dcec24ccd2f46fd4779d06aa653226522fb807db57302bb653506e642",
+  "html_bytes": 37697,
+  "collector_sha256": "fd754e1ad4749222ee3ad3146040d2b0ac2974f0bf6d3c8b8bee77c70d8a943f",
+  "nginx_sha256": "bdeec19e72cdb94ba96c15665865d2be0f61c2b3429c50b544cc0919c9d47a9d",
+  "units": {
+    "nginx.service": "active",
+    "remote-term-status.timer": "active",
+    "remote-ttyd@vps.service": "active",
+    "remote-ttyd@aliyun-new.service": "active",
+    "remote-ttyd@tencent-new.service": "active",
+    "remote-ttyd@tencent-main.service": "active",
+    "remote-ttyd@mbp-dojoy.service": "active",
+    "remote-ttyd@mac-local.service": "active"
+  },
+  "nginx_pid": "2273109",
+  "generated_at": "2026-09-06T05:00:01Z",
+  "hosts": [
+    {
+      "id": "vps",
+      "status": "online"
+    },
+    {
+      "id": "fa",
+      "status": "online"
+    },
+    {
+      "id": "tencent-new",
+      "status": "online"
+    },
+    {
+      "id": "tencent-main",
+      "status": "online"
+    },
+    {
+      "id": "mbp-dojoy",
+      "status": "online"
+    },
+    {
+      "id": "mac-local",
+      "status": "online"
+    }
+  ],
+  "local_authorization_backup": "/Users/wanghui/.ssh/authorized_keys.before-remote-term-local-20260906T045935Z",
+  "local_authorization_sha256": "01da4a55d4ca459e579470a7abf361312f70b22753e8f27383ff45092a1959a9",
+  "host_key_matched_current_mac": true
+}

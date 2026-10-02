@@ -1,0 +1,21 @@
+# BEGIN five-host-portal 20260906
+Host fa
+  HostName 39.107.156.205
+  User root
+  IdentityFile ~/.ssh/id_ed25519_mesh
+  IdentitiesOnly yes
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  StrictHostKeyChecking accept-new
+
+Host mbp-dojoy
+  HostName 127.0.0.1
+  Port 22224
+  User dojoy
+  IdentityFile ~/.ssh/id_ed25519_mesh
+  IdentitiesOnly yes
+  HostKeyAlias mbp-dojoy
+  StrictHostKeyChecking accept-new
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+# END five-host-portal 20260906

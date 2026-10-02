@@ -1,0 +1,42 @@
+{
+  "phase": "status_frontend_deployed",
+  "deployed_at": "2026-09-06T02:22:29.076962+00:00",
+  "backup": "/var/backups/remote-term/20260906T020251Z-status",
+  "previous_page": "/var/backups/remote-term/20260906T020251Z-status/index.before-right-sidebar.html",
+  "html_sha256": "3ab4b06a8ca24e68371404c4f0a5e7be60f2552b3bf9294eddb06a5d6d761521",
+  "html_bytes": 37497,
+  "units": {
+    "nginx.service": "active",
+    "remote-term-status.timer": "active",
+    "remote-ttyd@vps.service": "active",
+    "remote-ttyd@aliyun-new.service": "active",
+    "remote-ttyd@tencent-new.service": "active",
+    "remote-ttyd@tencent-main.service": "active",
+    "remote-ttyd@mbp-dojoy.service": "active"
+  },
+  "nginx_pid": "2273109",
+  "nginx_config_sha256": "dc15bc579aebd6bc380ad814986f391a21c71130750cb54c9af4fd8cddc508e0",
+  "snapshot_generated_at": "2026-09-06T02:21:59Z",
+  "hosts": [
+    {
+      "id": "vps",
+      "status": "online"
+    },
+    {
+      "id": "fa",
+      "status": "online"
+    },
+    {
+      "id": "tencent-new",
+      "status": "online"
+    },
+    {
+      "id": "tencent-main",
+      "status": "online"
+    },
+    {
+      "id": "mbp-dojoy",
+      "status": "online"
+    }
+  ]
+}

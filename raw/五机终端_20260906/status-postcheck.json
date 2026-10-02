@@ -1,0 +1,29 @@
+{
+  "previous": "2026-09-06T02:12:16Z",
+  "current": "2026-09-06T02:14:49Z",
+  "updated": true,
+  "hosts": [
+    {
+      "id": "vps",
+      "status": "online"
+    },
+    {
+      "id": "fa",
+      "status": "online"
+    },
+    {
+      "id": "tencent-new",
+      "status": "online"
+    },
+    {
+      "id": "tencent-main",
+      "status": "online"
+    },
+    {
+      "id": "mbp-dojoy",
+      "status": "online"
+    }
+  ],
+  "service": "Result=success\nExecMainStartTimestamp=Sun 2026-09-06 10:14:41 CST\nExecMainExitTimestamp=Sun 2026-09-06 10:14:49 CST\nExecMainStatus=0\nCPUUsageNSec=782111000\nActiveEnterTimestamp=\n",
+  "timer": "enabled"
+}

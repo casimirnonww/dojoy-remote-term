@@ -1,0 +1,18 @@
+{
+  "active": [],
+  "events": [
+    {
+      "event": "open",
+      "id": 1,
+      "host": "/mac-local/",
+      "session": "1"
+    },
+    {
+      "event": "close",
+      "id": 1,
+      "host": "/mac-local/",
+      "session": "1"
+    }
+  ],
+  "status_requests": 6
+}

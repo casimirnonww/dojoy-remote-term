@@ -1,0 +1,12 @@
+{
+  "verified_at": "2026-09-06T05:01:55.482545+00:00",
+  "ttyd_http": 200,
+  "websocket": "passed",
+  "identity": {
+    "hostname": "MacBook-Pro1-4.local",
+    "model": "MacBookPro18,2",
+    "memory_bytes": 68719476736
+  },
+  "test_session_exit_sent": true,
+  "temporary_forward_closed": true
+}
