@@ -6,7 +6,6 @@
       "name": "VPS",
       "meta": "入口机",
       "kind": "linux",
-      "ttyd_port": 7681,
       "ssh": { "host": "127.0.0.1", "port": 22, "user": "ops" }
     },
     {
@@ -14,7 +13,6 @@
       "name": "财务机",
       "meta": "fa",
       "kind": "linux",
-      "ttyd_port": 7682,
       "ssh": { "host": "39.107.156.205", "port": 22, "user": "ops" }
     },
     {
@@ -22,7 +20,6 @@
       "name": "腾讯新机",
       "meta": "gg",
       "kind": "linux",
-      "ttyd_port": 7683,
       "ssh": { "host": "REPLACE_WITH_TENCENT_NEW_IP", "port": 22, "user": "ops" }
     },
     {
@@ -30,7 +27,6 @@
       "name": "腾讯大总管",
       "meta": "Chris",
       "kind": "linux",
-      "ttyd_port": 7684,
       "ssh": { "host": "REPLACE_WITH_TENCENT_MAIN_IP", "port": 22, "user": "ops" }
     },
     {
@@ -38,7 +34,6 @@
       "name": "另一台 Mac",
       "meta": "局域网",
       "kind": "mac",
-      "ttyd_port": 7685,
       "tunnel": true,
       "ssh": { "host": "127.0.0.1", "port": 22224, "user": "dojoy" }
     },
@@ -47,7 +42,6 @@
       "name": "本机 Mac",
       "meta": "当前电脑",
       "kind": "mac",
-      "ttyd_port": 7686,
       "tunnel": true,
       "ssh": { "host": "127.0.0.1", "port": 22223, "user": "wanghui" }
     }

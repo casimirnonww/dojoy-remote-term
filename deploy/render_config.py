@@ -3,7 +3,6 @@
 
 Outputs (under --out):
   nginx/remote-term.conf   full nginx site, one ttyd location per host
-  ttyd/<id>.env            TTYD_PORT for remote-ttyd@<id>.service
   ssh_config               gateway -> host SSH entries (one key per host, pinned host keys)
   aliases                  allowlist for /usr/local/bin/remote-ttyd-ssh
   web/hosts.js             host list for the page (also kept in the repository's web/)
@@ -21,6 +20,7 @@ from hosts_config import HOSTNAME, HostsConfigError, load_hosts, placeholders  #
 
 TEMPLATE = Path(__file__).resolve().parent / "gateway" / "nginx" / "remote-term.conf.tmpl"
 CONFIG_DIR = "/etc/remote-term"
+TTYD_SOCKET = "/run/remote-term-ttyd/{id}/ttyd.sock"
 PAGE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
             "connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
             "form-action 'none'; object-src 'none'")
@@ -37,7 +37,7 @@ def indent(lines, spaces):
 
 def ttyd_location(host):
     lines = [
-        f"# {host['id']}: ttyd on loopback, reached only through the login above.",
+        f"# {host['id']}: ttyd on a UNIX socket only nginx and remote-term can open; login above.",
         f"location ^~ {host['path']} {{",
         "    if ($remote_term_bad_ws_origin) {",
         "        return 403;",
@@ -45,7 +45,7 @@ def ttyd_location(host):
         *("    " + header for header in COMMON_HEADERS),
         "    add_header X-Frame-Options \"SAMEORIGIN\" always;",
         "    add_header Content-Security-Policy \"frame-ancestors 'self'\" always;",
-        f"    proxy_pass http://127.0.0.1:{host['ttyd_port']};",
+        f"    proxy_pass http://unix:{TTYD_SOCKET.format(id=host['id'])};",
         "    proxy_http_version 1.1;",
         "    proxy_set_header Host $host;",
         "    proxy_set_header X-Real-IP $remote_addr;",
@@ -128,8 +128,6 @@ def render_all(hosts, domain):
         "aliases": "".join(host["id"] + "\n" for host in hosts),
         "web/hosts.js": render_hosts_js(hosts),
     }
-    for host in hosts:
-        files[f"ttyd/{host['id']}.env"] = f"TTYD_PORT={host['ttyd_port']}\n"
     return files
 
 

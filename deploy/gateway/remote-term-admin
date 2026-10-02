@@ -284,14 +284,11 @@ def cmd_apply(args):
     write_file(WWW / "hosts.js", files.pop("web/hosts.js"))
     for name in WEB_FILES:
         write_file(WWW / name, (HOME / "web" / name).read_text(encoding="utf-8"))
-    wanted = set()
-    for relative, content in files.items():
-        write_file(ETC / relative, content)
-        wanted.add(Path(relative).name)
-    for stale in (ETC / "ttyd").glob("*.env"):
-        if stale.name not in wanted:
-            stale.unlink()
-            print(f"hosts.json 已删除 {stale.stem}：请运行 remote-term-admin disable {stale.stem}", file=sys.stderr)
+    assert not files, f"unhandled rendered files: {sorted(files)}"
+    units = systemctl("list-units", "--plain", "--no-legend", "remote-ttyd@*.service", check=False).stdout
+    for unit in re.findall(r"remote-ttyd@([a-z0-9-]+)\.service", units):
+        if unit not in {host["id"] for host in hosts}:
+            print(f"hosts.json 已删除 {unit}：请运行 remote-term-admin disable {unit}", file=sys.stderr)
     pending = placeholders(hosts)
     if pending:
         print("这些机器在 hosts.json 里还是占位地址，终端暂不可用：" + "、".join(pending), file=sys.stderr)

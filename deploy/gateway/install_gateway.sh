@@ -69,6 +69,8 @@ ensure_user remote-term-rx /nonexistent               # runs the status receiver
 ensure_user oauth2-proxy /nonexistent                 # runs the login proxy
 ensure_user tunnel /var/lib/remote-term-tunnel        # holds the Macs' reverse tunnels
 install -d -m 755 -o remote-term -g remote-term /var/lib/remote-term-ttyd
+# nginx (www-data) may open the terminals' UNIX sockets; no other account can.
+usermod -aG remote-term www-data
 install -d -m 755 -o root -g root /var/lib/remote-term-tunnel
 # Public-key login must work for "tunnel" even though it has no password.
 usermod -p '*' tunnel
@@ -89,7 +91,7 @@ install -m 755 /opt/remote-term/deploy/gateway/remote-ttyd-ssh /usr/local/bin/re
 ln -sfn /opt/remote-term/deploy/gateway/remote-term-admin /usr/local/sbin/remote-term-admin
 
 step "配置目录 /etc/remote-term"
-install -d -m 755 /etc/remote-term /etc/remote-term/ttyd
+install -d -m 755 /etc/remote-term
 install -d -m 700 -o remote-term -g remote-term /etc/remote-term/keys
 [ -f /etc/remote-term/known_hosts ] || install -m 644 /dev/null /etc/remote-term/known_hosts
 [ -f /etc/remote-term/tunnel_authorized_keys ] || install -m 644 /dev/null /etc/remote-term/tunnel_authorized_keys
@@ -195,7 +197,8 @@ remote-term-admin apply
 
 step "启动服务"
 systemctl enable --now remote-term-receiver.service oauth2-proxy.service nginx.service
-systemctl reload nginx
+# Restart (not reload) so nginx workers pick up the remote-term group membership.
+systemctl restart nginx
 
 step "入口机自己的终端（vps）：ops 账户 + 专用密钥"
 remote-term-admin keygen vps >/dev/null

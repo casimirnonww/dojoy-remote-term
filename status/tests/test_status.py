@@ -122,7 +122,7 @@ class ProbeTests(unittest.TestCase):
 
 class HostsConfigTests(unittest.TestCase):
     def entry(self, **overrides):
-        base = {"id": "fa", "name": "财务机", "meta": "fa", "kind": "linux", "ttyd_port": 7682,
+        base = {"id": "fa", "name": "财务机", "meta": "fa", "kind": "linux",
                 "ssh": {"host": "192.0.2.10", "port": 22, "user": "ops"}}
         base.update(overrides)
         return base
@@ -139,10 +139,10 @@ class HostsConfigTests(unittest.TestCase):
 
     def test_invalid_entries_are_rejected(self):
         cases = {
-            "duplicate id": (self.entry(), self.entry(ttyd_port=7683)),
+            "duplicate id": (self.entry(), self.entry()),
             "root login": (self.entry(ssh={"host": "192.0.2.10", "port": 22, "user": "root"}),),
-            "shared ttyd port": (self.entry(), self.entry(id="other")),
-            "reserved port": (self.entry(ttyd_port=8790),),
+            "placeholder with ssh options": (self.entry(ssh={"host": "REPLACE\n  ProxyCommand x", "port": 22, "user": "ops"}),),
+            "unknown field ttyd_port": (self.entry(ttyd_port=7682),),
             "bad id": (self.entry(id="../etc"),),
             "bad host": (self.entry(ssh={"host": "a b", "port": 22, "user": "ops"}),),
             "tunnel off loopback": (self.entry(tunnel=True),),

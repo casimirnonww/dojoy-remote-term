@@ -39,8 +39,7 @@ class RenderTests(unittest.TestCase):
         for host in self.hosts:
             with self.subTest(host=host["id"]):
                 self.assertIn(f"location ^~ /{host['id']}/ {{", nginx)
-                self.assertIn(f"proxy_pass http://127.0.0.1:{host['ttyd_port']};", nginx)
-                self.assertEqual(self.files[f"ttyd/{host['id']}.env"], f"TTYD_PORT={host['ttyd_port']}\n")
+                self.assertIn(f"proxy_pass http://unix:/run/remote-term-ttyd/{host['id']}/ttyd.sock;", nginx)
                 self.assertIn(f"Host {host['id']}\n", ssh)
                 self.assertIn(f"IdentityFile /etc/remote-term/keys/{host['id']}\n", ssh)
         self.assertEqual(self.files["aliases"].split(), [host["id"] for host in self.hosts])

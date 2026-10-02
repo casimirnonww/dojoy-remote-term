@@ -21,7 +21,7 @@
                    │  每个请求先过 oauth2-proxy：GitHub 登录 + 该账号的二次验证，只放行指定用户
                    ├─ /、app.js、hosts.js ……   静态页面（严格 CSP）
                    ├─ /status.json            ─▶ receiver（127.0.0.1:8790）
-                   ├─ /<机器>/                ─▶ ttyd（127.0.0.1，-O 校验来源，每台最多 6 个）
+                   ├─ /<机器>/                ─▶ ttyd（本机 UNIX socket，只有 nginx 能连；-O 校验来源，每台最多 6 个）
                    │                               └─ ssh：每台机器单独一把钥匙，登录 ops（非 root）
                    └─ /api/report（不走登录）  ─▶ receiver：每台机器各一个 token
 各台机器：agent 以低权限每 30 秒把指标“推”给入口（只出不进）
@@ -34,6 +34,7 @@
 | 终端登录身份 | 各机 **root** | 各机 `ops`，sudo **必须输密码** |
 | 入口到各机的钥匙 | 一把共用 `id_ed25519_mesh` | 每台一把，`restrict,pty`（不能做任何转发） |
 | WebSocket 来源校验 | 无 | ttyd `-O`，nginx 再校验一次 |
+| 本机其他进程能否直连终端 | 能（ttyd 监听回环 TCP、没有自己的登录） | 不能：ttyd 只监听 UNIX socket，只有 nginx 和 remote-term 能连 |
 | 状态采集 | 入口 root 登录各机执行代码 | 各机主动上报，入口不持有登录各机的凭据 |
 | Mac 隧道 | 以 root 登录 VPS | 专用 `tunnel` 账户：没有 shell，只能监听自己的端口 |
 | 公网暴露 | 443 + 18443（IP 直连）+ 免登录路由 | 只有 443/80，必须用域名访问 |
@@ -44,7 +45,7 @@
 ## 目录结构
 
 ```
-hosts.json                机器清单的唯一真源（id、名称、终端端口、SSH 地址与用户）
+hosts.json                机器清单的唯一真源（id、名称、类型、SSH 地址与用户）
 web/                      页面：index.html + app.js + app.css；hosts.js 由 hosts.json 生成
 status/                   probe.py（采集）、agent.py（上报）、receiver.py（接收并提供 status.json）
                           hosts_config.py、status_schema.py（共用校验）、tests/
