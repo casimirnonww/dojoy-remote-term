@@ -7,6 +7,9 @@
 3. The join script's own functions turn on OpenSSH Server, install the terminal key, and that
    key logs in to 127.0.0.1 with `whoami`. (Skipped, and said so, if the OpenSSH Server
    capability cannot be installed on the machine.)
+4. The lock-down a fresh OpenSSH install gets (127.0.0.1 only, keys only) is valid for sshd.
+5. The whole join script runs, pointed at the local receiver: scheduled tasks as SYSTEM, the
+   tunnel key with its ACL, the first report and the enrollment with the tunnel key.
 
 Run: python deploy/tests/windows_e2e.py
 """
@@ -94,7 +97,7 @@ def wait_for_port(port, timeout=20):
     raise SystemExit("receiver did not start")
 
 
-def check_agent(work, host):
+def start_receiver(work, host):
     hosts = work / "hosts.json"
     hosts.write_text(json.dumps({"schema_version": 1, "hosts": [{
         "id": host["id"], "name": host["name"], "meta": host["meta"], "kind": "windows", "tunnel": True,
@@ -106,42 +109,42 @@ def check_agent(work, host):
     receiver = subprocess.Popen([sys.executable, str(REPO / "status" / "receiver.py"), "--hosts", str(hosts),
                                  "--tokens", str(tokens), "serve", "--state", str(work / "state.json"),
                                  "--port", str(PORT), "--enroll-dir", str(work / "enroll")])
-    try:
-        wait_for_port(PORT)
-        agent = REPO / "deploy" / "windows" / "agent.ps1"
-        base = f"http://127.0.0.1:{PORT}"
-        powershell(f"& {quote(agent)} -Url '{base}/api/report' -TokenFile {quote(token_file)} -Once; "
-                   "exit $LASTEXITCODE")
-        status = json.loads(urllib.request.urlopen(f"{base}/status.json", timeout=10).read())
-        row = next(row for row in status["hosts"] if row["id"] == host["id"])
-        print(json.dumps(row, ensure_ascii=False, indent=2))
-        assert row["status"] == "online", row
-        metrics = row["metrics"]
-        assert metrics["memory_total_bytes"] > 0 and metrics["disk_total_bytes"] > 0, metrics
-        assert metrics["cpu_cores"] >= 1 and metrics["arch"] in ("x86_64", "arm64"), metrics
+    wait_for_port(PORT)
+    return receiver, token, token_file
 
-        # A wrong token must be refused, and the agent must say so with a failing exit code.
-        bad = work / "bad-token"
-        bad.write_text("wrong-token-" + "y" * 30, encoding="ascii")
-        result = powershell(f"& {quote(agent)} -Url '{base}/api/report' -TokenFile {quote(bad)} -Once; "
-                            "exit $LASTEXITCODE", check=False)
-        assert result.returncode == 1, "agent accepted a refused report"
-        # Plain http to another host is refused before anything is sent.
-        result = powershell(f"& {quote(agent)} -Url 'http://gateway.example/api/report' "
-                            f"-TokenFile {quote(token_file)} -Once; exit $LASTEXITCODE", check=False)
-        assert result.returncode != 0, "agent sent the token over plain http"
 
-        host_keys = [keypair(work / name) for name in ("host_ed25519", "host_ecdsa")]
-        tunnel = keypair(work / "tunnel")
-        keys = ", ".join(quote(path) for path in host_keys)
-        powershell(f"& {quote(agent)} -Url '{base}/api/enroll' -TokenFile {quote(token_file)} -Enroll "
-                   f"-HostKeyFiles @({keys}) -TunnelKeyFile {quote(tunnel)}; exit $LASTEXITCODE")
-        enrollment = json.loads((work / "enroll" / f"{host['id']}.json").read_text(encoding="utf-8"))
-        assert len(enrollment["host_keys"]) == 2 and enrollment["tunnel_key"].startswith("ssh-ed25519 "), enrollment
-        print("agent report and enrollment: OK")
-    finally:
-        receiver.terminate()
-        receiver.wait(timeout=10)
+def check_agent(work, host, token_file):
+    agent = REPO / "deploy" / "windows" / "agent.ps1"
+    base = f"http://127.0.0.1:{PORT}"
+    powershell(f"& {quote(agent)} -Url '{base}/api/report' -TokenFile {quote(token_file)} -Once; "
+               "exit $LASTEXITCODE")
+    status = json.loads(urllib.request.urlopen(f"{base}/status.json", timeout=10).read())
+    row = next(row for row in status["hosts"] if row["id"] == host["id"])
+    print(json.dumps(row, ensure_ascii=False, indent=2))
+    assert row["status"] == "online", row
+    metrics = row["metrics"]
+    assert metrics["memory_total_bytes"] > 0 and metrics["disk_total_bytes"] > 0, metrics
+    assert metrics["cpu_cores"] >= 1 and metrics["arch"] in ("x86_64", "arm64"), metrics
+
+    # A wrong token must be refused, and the agent must say so with a failing exit code.
+    bad = work / "bad-token"
+    bad.write_text("wrong-token-" + "y" * 30, encoding="ascii")
+    result = powershell(f"& {quote(agent)} -Url '{base}/api/report' -TokenFile {quote(bad)} -Once; "
+                        "exit $LASTEXITCODE", check=False)
+    assert result.returncode == 1, "agent accepted a refused report"
+    # Plain http to another host is refused before anything is sent.
+    result = powershell(f"& {quote(agent)} -Url 'http://gateway.example/api/report' "
+                        f"-TokenFile {quote(token_file)} -Once; exit $LASTEXITCODE", check=False)
+    assert result.returncode != 0, "agent sent the token over plain http"
+
+    host_keys = [keypair(work / name) for name in ("host_ed25519", "host_ecdsa")]
+    tunnel = keypair(work / "tunnel")
+    keys = ", ".join(quote(path) for path in host_keys)
+    powershell(f"& {quote(agent)} -Url '{base}/api/enroll' -TokenFile {quote(token_file)} -Enroll "
+               f"-HostKeyFiles @({keys}) -TunnelKeyFile {quote(tunnel)}; exit $LASTEXITCODE")
+    enrollment = json.loads((work / "enroll" / f"{host['id']}.json").read_text(encoding="utf-8"))
+    assert len(enrollment["host_keys"]) == 2 and enrollment["tunnel_key"].startswith("ssh-ed25519 "), enrollment
+    print("agent report and enrollment: OK")
 
 
 def check_terminal_login(join, terminal_key, host):
@@ -170,6 +173,60 @@ def check_terminal_login(join, terminal_key, host):
     print("terminal key login: OK")
 
 
+def check_sshd_lockdown(join, work):
+    original = Path(os.environ["ProgramData"]) / "ssh" / "sshd_config"
+    if not original.exists():
+        print("SKIPPED: no sshd_config on this machine; lock-down not tested.")
+        return
+    copy = work / "sshd_config"
+    shutil.copyfile(original, copy)
+    env = dict(os.environ, DOJOY_JOIN_LIBRARY_ONLY="1")
+    for _ in range(2):  # applying it twice must not stack the header
+        powershell(f". {quote(join)}; Protect-SshdConfig {quote(copy)}", env=env)
+    text = copy.read_text(encoding="ascii")
+    assert text.count("ListenAddress 127.0.0.1") == 1, text[:300]
+    sshd = str(OPENSSH / "sshd.exe")
+    subprocess.run([sshd, "-t", "-f", str(copy)], check=True)
+    effective = subprocess.run([sshd, "-T", "-f", str(copy)], capture_output=True, text=True, check=True).stdout
+    assert "listenaddress 127.0.0.1:22" in effective and "passwordauthentication no" in effective, effective
+    print("sshd lock-down: OK")
+
+
+def check_full_join(admin, work, host, token):
+    terminal = keypair(work / "full_terminal_key")
+    gateway = (work / "gateway_key.pub").read_text().strip()
+    script = admin.build_windows_join_script(host, "127.0.0.1", token, terminal.read_text(), REPO, gateway)
+    base = f"http://127.0.0.1:{PORT}"
+    # The gateway is not here: send the report and the enrollment to the local receiver.
+    for name in ("report", "enroll"):
+        assert f"'https://127.0.0.1/api/{name}'" in script
+        script = script.replace(f"'https://127.0.0.1/api/{name}'", f"'{base}/api/{name}'")
+    path = work / "full-join.ps1"
+    path.write_text(script, encoding="utf-8")
+    tasks = "'DOJOY remote-term tunnel', 'DOJOY remote-term agent'"
+    try:
+        result = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+        print(result.stdout, result.stderr, sep="\n")
+        assert result.returncode == 0, "the join script failed"
+        listing = powershell(f"Get-ScheduledTask -TaskName {tasks} | ForEach-Object {{ "
+                             "$_.TaskName + ' | ' + $_.State + ' | ' + $_.Principal.UserId }").stdout
+        assert listing.count("SYSTEM") == 2, listing
+        key = Path(os.environ["ProgramData"]) / "remote-term" / "tunnel_key"
+        acl = subprocess.run(["icacls", str(key)], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace").stdout
+        print(acl)
+        assert "Administrators" in acl and "SYSTEM" in acl and "Users" not in acl, acl
+        enrollment = json.loads((work / "enroll" / f"{host['id']}.json").read_text(encoding="utf-8"))
+        tunnel_public = " ".join(Path(str(key) + ".pub").read_text().split()[:2])
+        assert enrollment["tunnel_key"] == tunnel_public, (enrollment, tunnel_public)
+        assert len(enrollment["host_keys"]) >= 1, enrollment
+        print("full join: OK")
+    finally:
+        powershell(f"Get-ScheduledTask -TaskName {tasks} -ErrorAction SilentlyContinue | "
+                   "Unregister-ScheduledTask -Confirm:$false", check=False)
+
+
 def main():
     # The runner's console code page cannot print the Chinese test host name.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -181,8 +238,15 @@ def main():
     try:
         join, terminal_key = render_join(admin, work, host)
         check_syntax([REPO / "deploy" / "windows" / "agent.ps1", REPO / "deploy" / "windows" / "tunnel.ps1", join])
-        check_agent(work, host)
-        check_terminal_login(join, terminal_key, host)
+        receiver, token, token_file = start_receiver(work, host)
+        try:
+            check_agent(work, host, token_file)
+            check_terminal_login(join, terminal_key, host)
+            check_sshd_lockdown(join, work)
+            check_full_join(admin, work, host, token)
+        finally:
+            receiver.terminate()
+            receiver.wait(timeout=10)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("windows e2e: all checks passed")

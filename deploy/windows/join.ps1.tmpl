@@ -46,6 +46,16 @@ function Protect-File([string]$path) {
     if ($LASTEXITCODE -ne 0) { throw "icacls 设置权限失败：$path" }
 }
 
+function Protect-SshdConfig([string]$config) {
+    # This PC's sshd is only reached through the tunnel: listen on 127.0.0.1 only, keys only.
+    # sshd takes the first value it reads, so these go on top.
+    $lines = @(Get-Content -LiteralPath $config | Where-Object { $_ -notmatch '^# DOJOY remote-term' })
+    $header = @('# DOJOY remote-term: reached only through the tunnel; keys only.',
+                'ListenAddress 127.0.0.1', 'PasswordAuthentication no', '')
+    if ($lines.Count -ge 3 -and $lines[0] -eq $header[1] -and $lines[1] -eq $header[2]) { return }
+    Write-Ascii $config ((($header + $lines) -join "`r`n") + "`r`n")
+}
+
 function Install-OpenSshServer {
     $fresh = $false
     if (-not (Get-Service -Name sshd -ErrorAction SilentlyContinue)) {
@@ -59,13 +69,8 @@ function Install-OpenSshServer {
     Set-Service -Name sshd -StartupType Automatic
     Start-Service -Name sshd
     if ($fresh) {
-        # First start generated the host keys and sshd_config. Lock it down: this PC's sshd is
-        # only reached through the tunnel, so listen on 127.0.0.1 only and accept keys only.
-        $config = Join-Path $SshDir 'sshd_config'
-        $lines = @(Get-Content -LiteralPath $config)
-        $header = @('# DOJOY remote-term: reached only through the tunnel; keys only.',
-                    'ListenAddress 127.0.0.1', 'PasswordAuthentication no', '')
-        Write-Ascii $config ((($header + $lines) -join "`r`n") + "`r`n")
+        # First start generated the host keys and sshd_config; now lock it down.
+        Protect-SshdConfig (Join-Path $SshDir 'sshd_config')
         Restart-Service -Name sshd
         Write-Host '已开启 OpenSSH 服务：只监听本机，只允许密钥登录。'
     } else {
