@@ -171,6 +171,9 @@ def check_terminal_login(join, terminal_key, host):
 
 
 def main():
+    # The runner's console code page cannot print the Chinese test host name.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     admin = load_admin()
     work = Path(tempfile.mkdtemp(prefix="dojoy-win-"))
     host = {"id": "win-ci", "name": "测试 Windows '引号'", "meta": "CI", "kind": "windows",
