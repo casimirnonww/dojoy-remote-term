@@ -7,7 +7,7 @@
 #       --pubkey 'restrict,pty ssh-ed25519 AAAA... remote-term-mac-local'
 #   --gateway-hostkey: printed at the end of install_gateway.sh
 #   --pubkey:          printed by `remote-term-admin keygen <id>` on the gateway
-#   --tunnel-port:     this Mac's ssh.port in hosts.json (22223 mac-local, 22224 mbp-dojoy)
+#   --tunnel-port:     this Mac's ssh.port in hosts.json (22223 mac-local, 22224 mbp-dojoy, 22225 mba-chris)
 #
 # What it does:
 #   * stops and moves away the old tunnels that logged in to the old VPS as root;
@@ -82,7 +82,7 @@ for label in com.dojoy.reverse-ssh-hermes local.codex.controller-reverse-ssh-her
         launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
         mkdir -p "$retired"
         mv "$agents/$label.plist" "$retired/"
-        echo "已停用旧隧道 $label（plist 移到 $retired）。"
+        echo "已停用旧隧道 ${label}（plist 移到 ${retired}）。"
     fi
 done
 
@@ -99,7 +99,7 @@ awk -v tag="$tag" 'NF == 0 || $NF != tag' "$keys" > "$tmp"
 echo "restrict,pty $terminal_key $tag" >> "$tmp"
 chmod 600 "$tmp"
 mv -f "$tmp" "$keys"
-echo "已安装网页终端公钥（$tag，restrict,pty）。"
+echo "已安装网页终端公钥（${tag}，restrict,pty）。"
 
 # 3. Tunnel-only key and pinned gateway host key.
 tunnel_key="$ssh_dir/id_ed25519_remote_term_tunnel"
@@ -164,7 +164,7 @@ PLIST
 plutil -lint "$plist" >/dev/null
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
-echo "隧道 LaunchAgent 已启动（日志：$log）。"
+echo "隧道 LaunchAgent 已启动（日志：${log}）。"
 
 if ! nc -z -G 2 127.0.0.1 22 2>/dev/null; then
     echo

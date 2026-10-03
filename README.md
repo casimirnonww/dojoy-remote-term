@@ -1,6 +1,6 @@
-# DOJOY 服务器终端（六机）
+# DOJOY 服务器终端（七机）
 
-一个网页，随时查看 6 台机器的运行状态，并能直接在网页里打开终端。
+一个网页，随时查看 7 台机器的运行状态，并能直接在网页里打开终端。
 
 > 仓库是公开的。里面没有密码或密钥，但别人能看到服务器 IP 和整套配置结构。
 > 以后想改回私有：VPS 安装或更新时改用 `deploy/bootstrap.sh` 顶部注释里带令牌的那一行。
@@ -31,12 +31,12 @@ curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main
 ```
 过程中会问三样东西：Client ID、Client secret、**ops 密码**。ops 密码只设这一次，所有 Linux 机器用 sudo 时都输它，至少 10 位，请记住。
 
-装完后屏幕上会列出其他 5 台机器各自的「接入命令」。
+装完后屏幕上会列出其他 6 台机器各自的「接入命令」。
 
-**第 3 步：其他 5 台机器（每台粘贴一行）**
+**第 3 步：其他 6 台机器（每台粘贴一行）**
 - 用自己的电脑打开 https://djai.djscz.com/ ，用 GitHub 登录，点左上角「接入其他机器」，就能看到每台机器要粘贴的那一行。
 - **财务机、腾讯新机、腾讯大总管**：在阿里云或腾讯云控制台打开这台服务器的网页终端（「远程连接」或「登录」），粘贴它那一行，回车。
-- **两台 Mac**：在那台 Mac 上用对应账户（本机 Mac 用 wanghui，另一台用 dojoy）打开「终端」App，粘贴它那一行，回车。Mac 需要开着「系统设置 → 通用 → 共享 → 远程登录」。
+- **三台 Mac**：在那台 Mac 上用对应账户（本机 Mac 用 wanghui，另一台 MacBook Pro 用 dojoy，Chris 的 MacBook Air 用 jokerbu）打开「终端」App，粘贴它那一行，回车。Mac 需要开着「系统设置 → 通用 → 共享 → 远程登录」。
 
 每台粘贴完大约 1 分钟，网页上就会显示这台机器「在线」，终端也能直接打开，不用再回 VPS 做任何事。每条接入命令只能用一次，用完自动作废。
 
@@ -60,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main
                    │                               └─ ssh：每台机器单独一把钥匙，登录 ops（非 root）
                    └─ /api/report（不走登录）  ─▶ receiver：每台机器各一个 token
 各台机器：agent 以低权限每 30 秒把指标“推”给入口（只出不进）
-两台 Mac：反向隧道登录入口机的 tunnel 账户（只能转发、只能监听自己的端口）
+三台 Mac：反向隧道登录入口机的 tunnel 账户（只能转发、只能监听自己的端口）
 ```
 
 | | 旧版（已废弃） | 新版 |
@@ -75,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main
 | 公网暴露 | 443 + 18443（IP 直连）+ 免登录路由 | 只有 443/80，必须用域名访问 |
 | 能否靠仓库重建 | 不能 | 能：`install_gateway.sh` 一次装好 |
 
-**入口机再次失陷时**：攻击者最多拿到各机 `ops` 和两台 Mac 用户账户的 shell。sudo 还要密码，入口机上也没有各机的 root 凭据。
+**入口机再次失陷时**：攻击者最多拿到各机 `ops` 和三台 Mac 用户账户的 shell。sudo 还要密码，入口机上也没有各机的 root 凭据。
 
 ## 目录结构
 
@@ -130,8 +130,8 @@ CI（`.github/workflows/ci.yml`）会运行以上全部检查，并用自签证�
 ## 已知限制与剩余风险
 
 - **GitHub 账号就是登录入口**：必须开启二次验证。账号被盗就能打开终端，但拿到 root 仍需要 `ops` 的 sudo 密码。
-- 入口机失陷能拿到 `ops` 和两台 Mac 用户账户的 shell（不是 root），Mac 账户里有个人数据。
+- 入口机失陷能拿到 `ops` 和三台 Mac 用户账户的 shell（不是 root），Mac 账户里有个人数据。
 - 登录过期后，已打开的终端 iframe 会被重定向到 GitHub 并被拦截，需要刷新页面。
-- 两台 Mac 只在用户登录、未休眠、能连到入口机时可用。
+- 三台 Mac 只在用户登录、未休眠、能连到入口机时可用。
 - 页面里原来的「知识库」（`/knowledge/`），以及 Hermes 等旧 VPS 上的其他服务，不在本仓库范围内，重建时需另行处理。
 - CPU 与网速是短窗口采样（Linux 约 0.3 秒，macOS 约 1 秒），不是 30 秒平均值；Mac 的内存是 `vm_stat` 估计值；磁盘只统计根文件系统。

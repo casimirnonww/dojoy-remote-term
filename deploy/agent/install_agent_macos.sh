@@ -100,7 +100,7 @@ launchctl bootstrap "gui/$(id -u)" "$plist"
 # ${a[@]+...}: bash 3.2 (macOS) treats an empty array as unset under set -u.
 if PYTHONDONTWRITEBYTECODE=1 "$python" "$dir/agent.py" --url "$url" --token-file "$dir/token" \
     ${cafile[@]+"${cafile[@]}"}; then
-    echo "上报成功；登录期间每 30 秒自动上报一次（日志：$log）。"
+    echo "上报成功；登录期间每 30 秒自动上报一次（日志：${log}）。"
 else
     echo "首次上报失败，见上面的提示。" >&2
     exit 1

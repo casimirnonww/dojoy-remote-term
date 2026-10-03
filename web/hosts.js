@@ -35,5 +35,11 @@ window.REMOTE_TERM_HOSTS = [
     "name": "本机 Mac",
     "meta": "当前电脑",
     "path": "/mac-local/"
+  },
+  {
+    "id": "mba-chris",
+    "name": "Chris 的 Air",
+    "meta": "MacBook Air",
+    "path": "/mba-chris/"
   }
 ];

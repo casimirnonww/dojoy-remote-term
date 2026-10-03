@@ -14,6 +14,7 @@ import argparse
 import base64
 import glob
 from datetime import datetime, timezone
+import hashlib
 import io
 import ipaddress
 import json
@@ -313,7 +314,7 @@ cleanup() {
 trap cleanup EXIT
 printf '%s' "$BUNDLE" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))'     | tar -xzf - -C "$work"
 
-echo "== 正在接入 $HOST_NAME（$HOST_ID）=="
+echo "== 正在接入 ${HOST_NAME}（${HOST_ID}）=="
 if [ "$KIND" = linux ]; then
     bash "$work/deploy/target/setup_ops_user.sh" --id "$HOST_ID" --pubkey "$TERMINAL_KEY"         --password-hash "$PASSWORD_HASH" >/dev/null
     echo "已建立 ops 账户（sudo 密码就是安装入口机时设的 ops 密码）。"
@@ -591,11 +592,23 @@ def enrolled(host_id):
                                          check=False).stdout.strip() == "enabled"
 
 
+def join_version(home, host):
+    """Fingerprint of everything a join script carries (template, bundled files, the host's
+    entry). An unused link made from other code or settings is replaced, so a fix reaches it."""
+    digest = hashlib.sha256(JOIN_TEMPLATE.encode("utf-8"))
+    digest.update(json.dumps(host, sort_keys=True).encode("utf-8"))
+    for relative in JOIN_BUNDLE:
+        digest.update(relative.encode("utf-8") + b"\0" + (Path(home) / relative).read_bytes())
+    return digest.hexdigest()[:16]
+
+
 def make_join(host, domain, force=False):
     """Create (or reuse) this host's one-time join script; return the command to paste."""
     data = joins()
     entry = data.get(host["id"])
-    if entry and not force and (JOIN_DIR / f"{entry['secret']}.sh").exists():
+    version = join_version(HOME, host)
+    if (entry and not force and entry.get("version") == version
+            and (JOIN_DIR / f"{entry['secret']}.sh").exists()):
         return join_command(domain, entry["secret"])
     password_hash = read_text(ETC / "ops-password.hash").strip()
     if host["kind"] == "linux" and not password_hash:
@@ -611,7 +624,8 @@ def make_join(host, domain, force=False):
     JOIN_DIR.mkdir(mode=0o750, exist_ok=True)
     shutil.chown(JOIN_DIR, "root", NGINX_GROUP)
     write_file(JOIN_DIR / f"{secret}.sh", script, mode=0o640, owner=("root", NGINX_GROUP))
-    data[host["id"]] = {"secret": secret, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    data[host["id"]] = {"secret": secret, "version": version,
+                        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     save_joins(data)
     return join_command(domain, secret)
 

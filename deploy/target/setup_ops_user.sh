@@ -64,7 +64,7 @@ line="restrict,pty $key_type $key_blob $tag"
 
 if ! id "$user" >/dev/null 2>&1; then
     useradd --create-home --shell /bin/bash "$user"
-    echo "已创建用户 $user。"
+    echo "已创建用户 ${user}。"
 fi
 admin_group=""
 for group in sudo wheel; do
@@ -93,7 +93,7 @@ elif [ "$password_state" != "P" ]; then
         echo "请为 $user 设置密码（sudo 时要输入，不要和其他机器相同）："
         passwd "$user"
     else
-        echo "警告：$user 还没有密码；请交互运行 passwd $user，否则 sudo 不可用。" >&2
+        echo "警告：$user 还没有密码；请交互运行 passwd ${user}，否则 sudo 不可用。" >&2
     fi
 fi
 
@@ -109,7 +109,7 @@ echo "$line" >> "$tmp"
 chown "$user:$user" "$tmp"
 chmod 600 "$tmp"
 mv -f "$tmp" "$keys"
-echo "已为 $user 安装网页终端公钥（$tag，restrict,pty）。"
+echo "已为 $user 安装网页终端公钥（${tag}，restrict,pty）。"
 
 echo
 echo "下一步：在入口机上运行（整行复制）："

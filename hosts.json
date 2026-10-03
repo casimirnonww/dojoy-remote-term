@@ -44,6 +44,14 @@
       "kind": "mac",
       "tunnel": true,
       "ssh": { "host": "127.0.0.1", "port": 22223, "user": "wanghui" }
+    },
+    {
+      "id": "mba-chris",
+      "name": "Chris 的 Air",
+      "meta": "MacBook Air",
+      "kind": "mac",
+      "tunnel": true,
+      "ssh": { "host": "127.0.0.1", "port": 22225, "user": "jokerbu" }
     }
   ]
 }
