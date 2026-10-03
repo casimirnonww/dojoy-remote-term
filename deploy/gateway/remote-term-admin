@@ -309,8 +309,12 @@ if [ "$KIND" = mac ]; then
     if [ "$(id -u)" -eq 0 ]; then echo "请不要加 sudo，用 $SSH_USER 账户直接运行。" >&2; exit 1; fi
     if [ "$(id -un)" != "$SSH_USER" ]; then echo "请在 $SSH_USER 账户下运行（当前是 $(id -un)）。" >&2; exit 1; fi
 fi
-if ! /usr/bin/python3 -c 'import sys; sys.exit(sys.version_info < (3, 7))' 2>/dev/null; then
-    if [ "$KIND" = mac ]; then
+if ! python_check=$(/usr/bin/python3 -c 'import sys; sys.exit(sys.version_info < (3, 7))' 2>&1); then
+    if [ "$KIND" = mac ] && [[ "$python_check" == *license* ]]; then
+        # /usr/bin/python3 belongs to Xcode here, and Xcode refuses to run until its license is accepted.
+        echo "这台 Mac 需要先同意 Xcode 的许可协议：运行 sudo xcodebuild -license accept" >&2
+        echo "（会要这台 Mac 的登录密码），然后再粘贴一次接入命令。" >&2
+    elif [ "$KIND" = mac ]; then
         echo "这台 Mac 需要先安装「命令行开发者工具」（里面带 python3）：运行 xcode-select --install，" >&2
         echo "按弹窗装完后，再粘贴一次接入命令。" >&2
     else
