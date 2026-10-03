@@ -241,9 +241,13 @@ def check_full_join(admin, work, host, token):
         print("full join: OK")
 
         # A "tunnel" account like the gateway's, allowed to forward with the generated tunnel key.
-        password = "Dj!" + secrets.token_urlsafe(18) + "9aZ"
-        subprocess.run(["net", "user", "tunnel", password, "/add"], check=True, capture_output=True)
-        subprocess.run(["net", "localgroup", "Administrators", "tunnel", "/add"], check=True, capture_output=True)
+        # At most 14 characters: for a longer one `net user` stops to ask Y/N, and fails without input.
+        password = "Dj!" + secrets.token_hex(4) + "9aZ"
+        for command in (["net", "user", "tunnel", password, "/add"],
+                        ["net", "localgroup", "Administrators", "tunnel", "/add"]):
+            created = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                     stdin=subprocess.DEVNULL)
+            assert created.returncode == 0, (command[:3], created.stdout, created.stderr)
         env = dict(os.environ, DOJOY_JOIN_LIBRARY_ONLY="1")
         powershell(f". {quote(path)}; Install-TerminalKey 'restrict,port-forwarding {tunnel_public} "
                    "remote-term-tunnel-ci' 'remote-term-tunnel-ci'", env=env)
