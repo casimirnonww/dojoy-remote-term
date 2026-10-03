@@ -2,7 +2,7 @@
 
 一个网页，随时查看 6 台机器的运行状态，并能直接在网页里打开终端。
 
-> 仓库里没有任何密码或密钥；公开后别人能看到服务器 IP 和配置结构。
+> 仓库保持**私有**。里面没有密码或密钥，但有服务器 IP 和整套配置结构，不要公开。
 
 ---
 
@@ -16,17 +16,28 @@
    - Authorization callback URL：`https://djai.djscz.com/oauth2/callback`
 
    点 **Register application**，记下页面上的 **Client ID**；再点 **Generate a new client secret**，记下 **Client secret**（只显示一次）。
-3. 把仓库改成公开：打开 https://github.com/casimirnonww/dojoy-remote-term/settings ，拉到最下面 **Danger Zone** → **Change visibility** → **Make public**，按提示确认。
+3. 建一个只读令牌，让 VPS 能下载这个私有仓库：打开 https://github.com/settings/personal-access-tokens/new ，填写：
+   - Token name：`dojoy-vps-install`
+   - Expiration：`7 days`
+   - Repository access：选 **Only select repositories**，再选 `casimirnonww/dojoy-remote-term`
+   - Permissions → Repository permissions → **Contents** 改成 **Read-only**（其他都不动）
+
+   点 **Generate token**，复制以 `github_pat_` 开头的那一串（只显示一次）。它只能读这一个仓库，泄露了最多等于这个仓库被人看到。
+
+   > Client secret 和令牌都**只在 VPS 安装时输入**，不要发到聊天、邮件或任何别的地方。
 
 **第 2 步：VPS（在 DigitalOcean 网页上操作）**
 
 打开 DigitalOcean → Droplets → 点这台 VPS → 右上角 **Console**（网页终端）。粘贴下面一整行，回车：
 ```
-curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main/deploy/bootstrap.sh | bash
+read -rsp 'GitHub 令牌：' T && echo && printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github.raw"\n' "$T" | curl -fsSL -K - -o /root/dojoy-bootstrap.sh 'https://api.github.com/repos/casimirnonww/dojoy-remote-term/contents/deploy/bootstrap.sh?ref=main' && DOJOY_GITHUB_TOKEN="$T" bash /root/dojoy-bootstrap.sh; unset T
 ```
-过程中会问三样东西：Client ID、Client secret、**ops 密码**。ops 密码只设这一次，所有 Linux 机器用 sudo 时都输它，至少 10 位，请记住。
+先会提示「GitHub 令牌」，粘贴上一步的令牌，回车（输入时屏幕上不显示，正常）。
+如果马上出现 `error: 401` 或 `error: 404`，说明令牌不对、已过期，或者建令牌时没选这个仓库、没给 Contents 只读权限；重建一个再粘贴这一行。
+接着会问三样东西：Client ID、Client secret、**ops 密码**。ops 密码只设这一次，所有 Linux 机器用 sudo 时都输它，至少 10 位，请记住。
 
 装完后屏幕上会列出其他 5 台机器各自的「接入命令」。
+令牌只用这一次：装完可以到 https://github.com/settings/personal-access-tokens 把 `dojoy-vps-install` 删掉。
 
 **第 3 步：其他 5 台机器（每台粘贴一行）**
 - 用自己的电脑打开 https://djai.djscz.com/ ，用 GitHub 登录，点左上角「接入其他机器」，就能看到每台机器要粘贴的那一行。
@@ -105,7 +116,7 @@ archive/2026-09-06/       旧版报告、回执与配置（已失效）
 | 轮换某台机器的终端钥匙 | `sudo remote-term-admin keygen <id> --force`，再 `join <id> --force` 重新接入 |
 | 轮换或作废上报 token | `sudo remote-term-admin token <id>` / `revoke-token <id>` |
 | 停用某台机器的终端 | `sudo remote-term-admin disable <id>` |
-| 更新代码 | 拉取新代码后重跑 `install_gateway.sh`（可重复执行，保留密钥、token 和证书） |
+| 更新代码 | 按「上线步骤」第 1 步第 3 项再建一个令牌，在 VPS 上重新粘贴第 2 步那一行（可重复执行，保留密钥、token 和证书） |
 | 日志 | `journalctl -u remote-ttyd@<id> -u remote-term-receiver -u oauth2-proxy -u nginx` |
 
 ## 开发与测试
