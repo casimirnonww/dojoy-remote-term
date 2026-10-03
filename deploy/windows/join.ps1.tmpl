@@ -2,6 +2,10 @@
 # Windows PowerShell 5.1，用管理员身份运行。重复运行是安全的。
 # 变量后面紧跟中文时一律写成 ${变量}：PowerShell 会把中文字符当成变量名的一部分。
 $ErrorActionPreference = 'Stop'
+# Started from PowerShell 7, Windows PowerShell 5.1 inherits a module path pointing at 7's own
+# modules, which it cannot load (Set-Acl and others then "could not be loaded"). Use the
+# system's module path instead.
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
 $HostId = @@Q_ID@@
 $HostName = @@Q_NAME@@
 $SshUser = @@Q_USER@@
@@ -52,7 +56,7 @@ function Protect-File([string]$path) {
         $identity = New-Object Security.Principal.SecurityIdentifier($sid)
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')))
     }
-    Set-Acl -LiteralPath $path -AclObject $acl
+    [IO.File]::SetAccessControl($path, $acl)
 }
 
 function Protect-SshdConfig([string]$config) {
