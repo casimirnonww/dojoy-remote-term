@@ -52,6 +52,14 @@
       "kind": "mac",
       "tunnel": true,
       "ssh": { "host": "127.0.0.1", "port": 22225, "user": "jokerbu" }
+    },
+    {
+      "id": "win-legion",
+      "name": "联想笔记本",
+      "meta": "Windows",
+      "kind": "windows",
+      "tunnel": true,
+      "ssh": { "host": "127.0.0.1", "port": 22226, "user": "wangh" }
     }
   ]
 }

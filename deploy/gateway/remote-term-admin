@@ -56,6 +56,9 @@ JOIN_BUNDLE = (
     "deploy/agent/remote-term-agent.service", "deploy/agent/remote-term-agent.timer",
     "deploy/target/setup_ops_user.sh", "deploy/target/setup_mac.sh",
 )
+# Windows gets a PowerShell join script instead, carrying these two scripts inline.
+WINDOWS_JOIN_TEMPLATE = "deploy/windows/join.ps1.tmpl"
+WINDOWS_JOIN_FILES = ("deploy/windows/agent.ps1", "deploy/windows/tunnel.ps1")
 
 sys.path.insert(0, str(HOME / "status"))
 sys.path.insert(0, str(HOME / "deploy"))
@@ -364,8 +367,46 @@ def build_join_script(host, domain, token, terminal_key, bundle, password_hash="
     return text
 
 
-def join_command(domain, secret):
-    url = f"https://{domain}/join/{secret}.sh"
+def ps_quote(value):
+    """A PowerShell single-quoted literal. PowerShell also ends such a string at the curly
+    single quotes, so every kind of single quote is doubled."""
+    text = str(value)
+    for quote in "'\u2018\u2019\u201a\u201b":
+        text = text.replace(quote, quote * 2)
+    return "'" + text + "'"
+
+
+def build_windows_join_script(host, domain, token, terminal_key, home, gateway_hostkey=""):
+    values = {
+        "ID": host["id"], "NAME": host["name"], "USER": host["ssh_user"], "DOMAIN": domain,
+        "REPORT_URL": f"https://{domain}/api/report", "ENROLL_URL": f"https://{domain}/api/enroll",
+        "TOKEN": token, "TERMINAL_KEY": " ".join(parse_public_key(terminal_key)),
+        "GATEWAY_HOSTKEY": gateway_hostkey, "TUNNEL_PORT": str(host["ssh_port"]),
+        "AGENT": (Path(home) / WINDOWS_JOIN_FILES[0]).read_text(encoding="ascii"),
+        "TUNNEL": (Path(home) / WINDOWS_JOIN_FILES[1]).read_text(encoding="ascii"),
+    }
+    text = (Path(home) / WINDOWS_JOIN_TEMPLATE).read_text(encoding="utf-8")
+    for key, value in values.items():
+        text = text.replace(f"@@Q_{key}@@", ps_quote(value))
+    text = text.replace("@@NAME@@", re.sub(r"[\r\n]", " ", host["name"])).replace("@@ID@@", host["id"])
+    if "@@" in text:
+        raise ValueError("unrendered placeholder in join script")
+    # Windows PowerShell 5.1 reads a script without a BOM in the system code page (GBK on
+    # Chinese Windows) and would garble every Chinese message.
+    return "\ufeff" + text
+
+
+def join_file_name(kind, secret):
+    return f"{secret}.ps1" if kind == "windows" else f"{secret}.sh"
+
+
+def join_command(domain, secret, kind="linux"):
+    url = f"https://{domain}/join/{join_file_name(kind, secret)}"
+    if kind == "windows":
+        # Run from a file, not piped into iex: the script can then exit with an error code
+        # without closing the window. Execution policy is relaxed for this one process only.
+        return (f"iwr -useb '{url}' -OutFile \"$env:TEMP\\dojoy-join.ps1\"; "
+                "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:TEMP\\dojoy-join.ps1\"")
     return f"curl -fsSLo /tmp/dojoy-join.sh '{url}' && bash /tmp/dojoy-join.sh"
 
 
@@ -504,8 +545,11 @@ def cmd_tunnel_key(args):
     print(f"已授权 {args.host_id} 的隧道公钥，只能监听 127.0.0.1:{host['ssh_port']}：{fingerprint(key_type, blob)}")
 
 
-def ssh_check(host_id):
-    probe = "id -un; sudo -n true 2>/dev/null && echo SUDO_NOPASSWD || echo SUDO_NEEDS_PASSWORD"
+def ssh_check(host_id, kind="linux"):
+    if kind == "windows":
+        probe = "whoami"
+    else:
+        probe = "id -un; sudo -n true 2>/dev/null && echo SUDO_NOPASSWD || echo SUDO_NEEDS_PASSWORD"
     result = run(["runuser", "-u", TTYD_USER, "--", "/usr/bin/ssh", "-F", str(ETC / "ssh_config"),
                   host_id, probe], check=False, capture_output=True, timeout=30)
     return result.returncode, result.stdout.split()
@@ -522,10 +566,14 @@ def cmd_check(args):
         problems.append("还没有固定主机公钥（hostkey）")
     if problems:
         raise AdminError(f"{args.host_id}：" + "；".join(problems) + "。")
-    code, words = ssh_check(args.host_id)
+    code, words = ssh_check(args.host_id, host["kind"])
     if code != 0 or not words:
         raise AdminError(f"{args.host_id}：SSH 登录测试失败（退出码 {code}）。检查目标机的 authorized_keys、"
                          "防火墙，以及隧道是否已连上。")
+    if host["kind"] == "windows":
+        # Windows has no sudo: the account's own rights apply (an administrator is all-powerful).
+        print(f"{args.host_id}：SSH 正常，登录用户 {words[0]}（Windows，没有 sudo 这道关）。")
+        return
     user, sudo = words[0], words[-1]
     if sudo == "SUDO_NOPASSWD":
         raise AdminError(f"{args.host_id}：用户 {user} 执行 sudo 不需要密码。请先改为需要密码，"
@@ -594,7 +642,7 @@ def remove_join(host_id):
     data = joins()
     entry = data.pop(host_id, None)
     if entry:
-        (JOIN_DIR / f"{entry['secret']}.sh").unlink(missing_ok=True)
+        (JOIN_DIR / entry.get("file", f"{entry['secret']}.sh")).unlink(missing_ok=True)
         save_joins(data)
 
 
@@ -606,9 +654,13 @@ def enrolled(host_id):
 def join_version(home, host):
     """Fingerprint of everything a join script carries (template, bundled files, the host's
     entry). An unused link made from other code or settings is replaced, so a fix reaches it."""
-    digest = hashlib.sha256(JOIN_TEMPLATE.encode("utf-8"))
+    if host["kind"] == "windows":
+        template, files = (Path(home) / WINDOWS_JOIN_TEMPLATE).read_text(encoding="utf-8"), WINDOWS_JOIN_FILES
+    else:
+        template, files = JOIN_TEMPLATE, JOIN_BUNDLE
+    digest = hashlib.sha256(template.encode("utf-8"))
     digest.update(json.dumps(host, sort_keys=True).encode("utf-8"))
-    for relative in JOIN_BUNDLE:
+    for relative in files:
         digest.update(relative.encode("utf-8") + b"\0" + (Path(home) / relative).read_bytes())
     return digest.hexdigest()[:16]
 
@@ -619,29 +671,36 @@ def make_join(host, domain, force=False):
     entry = data.get(host["id"])
     version = join_version(HOME, host)
     if (entry and not force and entry.get("version") == version
-            and (JOIN_DIR / f"{entry['secret']}.sh").exists()):
-        return join_command(domain, entry["secret"])
+            and (JOIN_DIR / entry.get("file", f"{entry['secret']}.sh")).exists()):
+        return join_command(domain, entry["secret"], host["kind"])
     password_hash = read_text(ETC / "ops-password.hash").strip()
     if host["kind"] == "linux" and not password_hash:
         raise AdminError("缺少 ops 密码哈希；请重新运行 install_gateway.sh。")
     gateway_hostkey = " ".join(read_text(GATEWAY_HOSTKEY).split()[:2])
     from receiver import TokenStore
     token = TokenStore(ETC / "agent-tokens.json").issue(host["id"])
-    script = build_join_script(host, domain, token, ensure_key(host["id"]), build_bundle(HOME),
-                               password_hash if host["kind"] == "linux" else "", gateway_hostkey)
+    if host["kind"] == "windows":
+        script = build_windows_join_script(host, domain, token, ensure_key(host["id"]), HOME, gateway_hostkey)
+    else:
+        script = build_join_script(host, domain, token, ensure_key(host["id"]), build_bundle(HOME),
+                                   password_hash if host["kind"] == "linux" else "", gateway_hostkey)
     if entry:
-        (JOIN_DIR / f"{entry['secret']}.sh").unlink(missing_ok=True)
+        (JOIN_DIR / entry.get("file", f"{entry['secret']}.sh")).unlink(missing_ok=True)
     secret = secrets.token_hex(16)
+    name = join_file_name(host["kind"], secret)
     JOIN_DIR.mkdir(mode=0o750, exist_ok=True)
     shutil.chown(JOIN_DIR, "root", NGINX_GROUP)
-    write_file(JOIN_DIR / f"{secret}.sh", script, mode=0o640, owner=("root", NGINX_GROUP))
-    data[host["id"]] = {"secret": secret, "version": version,
+    write_file(JOIN_DIR / name, script, mode=0o640, owner=("root", NGINX_GROUP))
+    data[host["id"]] = {"secret": secret, "file": name, "version": version,
                         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     save_joins(data)
-    return join_command(domain, secret)
+    return join_command(domain, secret, host["kind"])
 
 
 def where_to_paste(host):
+    if host["kind"] == "windows":
+        return (f"在这台 Windows 电脑上用 {host['ssh_user']} 账户登录，在开始菜单上点右键，选「终端(管理员)」"
+                "（或「Windows PowerShell(管理员)」），粘贴下面一整行，回车：")
     if host["kind"] == "mac":
         return f"在这台 Mac 上用 {host['ssh_user']} 账户打开「终端」App，粘贴下面一整行，回车："
     return "在这台服务器的网页终端里（云平台控制台的「远程连接 / 登录」），粘贴下面一整行，回车："
@@ -658,7 +717,7 @@ def write_join_page(domain):
     """The site's join.txt: the commands still waiting to be pasted (behind the login)."""
     hosts = hosts_by_id()
     sections = [f"【{hosts[host_id]['name']}（{host_id}）】{where_to_paste(hosts[host_id])}\n"
-                f"{join_command(domain, entry['secret'])}\n"
+                f"{join_command(domain, entry['secret'], hosts[host_id]['kind'])}\n"
                 for host_id, entry in joins().items() if host_id in hosts]
     page = WWW / "join.txt"
     if not sections:

@@ -11,7 +11,7 @@ SSH_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
 HOSTNAME = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
 PLACEHOLDER_PREFIX = "REPLACE"
 PLACEHOLDER = re.compile(r"^REPLACE[A-Z0-9_]*$")
-KINDS = {"linux", "mac"}
+KINDS = {"linux", "mac", "windows"}
 
 
 class HostsConfigError(ValueError):
