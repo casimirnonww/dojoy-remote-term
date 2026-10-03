@@ -23,7 +23,9 @@
 
 **第 2 步：VPS（在 DigitalOcean 网页上操作）**
 
-打开 DigitalOcean → Droplets → 点这台 VPS → 右上角 **Console**（网页终端）。粘贴下面一整行，回车：
+先放行 80 和 443：打开 DigitalOcean → 左侧 **Networking** → **Firewalls**。如果有防火墙应用在这台 VPS 上，点进去，在 **Inbound Rules** 里点 **New rule**，加 **HTTP** 和 **HTTPS** 两条（来源保持 All IPv4、All IPv6），保存。证书申请和以后每 60 天的自动续期都要用 80。没有防火墙就跳过。本机的 ufw 如果开着，安装脚本会自动放行。
+
+然后打开 DigitalOcean → Droplets → 点这台 VPS → 右上角 **Console**（网页终端）。粘贴下面一整行，回车：
 ```
 curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main/deploy/bootstrap.sh | bash
 ```
@@ -110,6 +112,7 @@ archive/2026-09-06/       旧版报告、回执与配置（已失效）
 | 停用某台机器的终端 | `sudo remote-term-admin disable <id>` |
 | 更新代码 | 在 VPS 上重新粘贴「上线步骤」第 2 步那一行（可重复执行，保留密钥、token 和证书） |
 | 日志 | `journalctl -u remote-ttyd@<id> -u remote-term-receiver -u oauth2-proxy -u nginx` |
+| 证书申请报 `Timeout during connect` | 外网连不上本机 80 端口：在 DigitalOcean 云防火墙放行 HTTP 和 HTTPS，再重新粘贴第 2 步那一行（已输入的不会再问） |
 
 ## 开发与测试
 
