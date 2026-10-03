@@ -41,5 +41,11 @@ window.REMOTE_TERM_HOSTS = [
     "name": "Chris 的 Air",
     "meta": "MacBook Air",
     "path": "/mba-chris/"
+  },
+  {
+    "id": "win-legion",
+    "name": "联想笔记本",
+    "meta": "Windows",
+    "path": "/win-legion/"
   }
 ];

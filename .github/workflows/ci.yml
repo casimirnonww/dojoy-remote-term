@@ -65,3 +65,16 @@ jobs:
           sudo install -m 755 /bin/true /usr/local/bin/oauth2-proxy
           sudo install -m 755 /bin/true /usr/local/sbin/remote-term-admin
           cd "$units" && systemd-analyze verify --man=no ./*.service ./*.path ./*.timer
+
+  windows:
+    # Windows PowerShell 5.1, as on Windows 11: parse every script, report and enroll against a
+    # local receiver, and log in with the terminal key the join script installs.
+    name: Windows (PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Windows agent, enrollment and join script
+        run: python deploy/tests/windows_e2e.py

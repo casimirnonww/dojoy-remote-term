@@ -1,3 +1,4 @@
+import argparse
 import base64
 import importlib.machinery
 import importlib.util
@@ -11,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "deploy"))
@@ -490,6 +492,81 @@ class JoinVersionTests(unittest.TestCase):
         with open(self.home / "deploy/target/setup_mac.sh", "a", encoding="utf-8") as script:
             script.write("# changed\n")
         self.assertNotEqual(admin.join_version(self.home, self.host), before)
+
+
+class WindowsJoinTests(unittest.TestCase):
+    def setUp(self):
+        self.host = {host["id"]: host for host in load_hosts(REPO / "hosts.json")}["win-legion"]
+        self.key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOfjYK2kIUwffyxuDh8gicevgdFkfio49xyfZlNqjwcq remote-term-win"
+
+    def render(self, **changes):
+        return admin.build_windows_join_script(dict(self.host, **changes), "djai.djscz.com", "tok_en-123",
+                                               self.key, REPO, ED25519)
+
+    def test_script_has_a_bom_and_every_value_quoted(self):
+        script = self.render()
+        self.assertTrue(script.startswith("\ufeff"), "PowerShell 5.1 needs the BOM to read Chinese text")
+        self.assertNotIn("@@", script)
+        for line in ("$HostId = 'win-legion'", "$SshUser = 'wangh'", "$TunnelPort = '22226'",
+                     "$Gateway = 'djai.djscz.com'", "$ReportUrl = 'https://djai.djscz.com/api/report'",
+                     "$Token = 'tok_en-123'", f"$GatewayHostKey = '{ED25519}'",
+                     "$TerminalKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOfjYK2kIUwffyxuDh8gicevgdFkfio49xyfZlNqjwcq'"):
+            with self.subTest(line=line):
+                self.assertIn("\n" + line + "\n", script)
+        agent = (REPO / "deploy/windows/agent.ps1").read_text(encoding="ascii")
+        self.assertIn("$AgentScript = " + admin.ps_quote(agent) + "\n", script)
+
+    def test_quotes_cannot_end_a_string(self):
+        self.assertEqual(admin.ps_quote("it's"), "'it''s'")
+        self.assertEqual(admin.ps_quote("a\u2019b"), "'a\u2019\u2019b'")
+        script = self.render(name="x'; Remove-Item C:\\ -Recurse; '\u2018")
+        self.assertIn("$HostName = 'x''; Remove-Item C:\\ -Recurse; ''\u2018\u2018'\n", script)
+
+    def test_join_command_downloads_then_runs_the_file(self):
+        self.assertEqual(admin.join_command("djai.djscz.com", "ab12", "windows"),
+                         "iwr -useb 'https://djai.djscz.com/join/ab12.ps1' -OutFile \"$env:TEMP\\dojoy-join.ps1\"; "
+                         "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:TEMP\\dojoy-join.ps1\"")
+        self.assertEqual(admin.join_file_name("windows", "ab12"), "ab12.ps1")
+        self.assertEqual(admin.join_file_name("mac", "ab12"), "ab12.sh")
+
+    def test_powershell_files_stay_ascii_and_brace_variables_before_chinese(self):
+        for name in admin.WINDOWS_JOIN_FILES:
+            with self.subTest(name=name):
+                (REPO / name).read_text(encoding="ascii")
+        # PowerShell reads Chinese letters right after $name as part of the variable name.
+        template = (REPO / admin.WINDOWS_JOIN_TEMPLATE).read_text(encoding="utf-8")
+        for number, line in enumerate(template.splitlines(), 1):
+            with self.subTest(line=number):
+                self.assertNotRegex(line, r"\$[A-Za-z_][A-Za-z0-9_:]*(?=[^\x00-\x7f])", line.strip())
+
+    def test_version_follows_the_windows_scripts(self):
+        mac = {host["id"]: host for host in load_hosts(REPO / "hosts.json")}["mba-chris"]
+        self.assertNotEqual(admin.join_version(REPO, self.host), admin.join_version(REPO, dict(mac, kind="windows")))
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            for relative in (admin.WINDOWS_JOIN_TEMPLATE,) + admin.WINDOWS_JOIN_FILES + admin.JOIN_BUNDLE:
+                (home / relative).parent.mkdir(parents=True, exist_ok=True)
+                (home / relative).write_bytes((REPO / relative).read_bytes())
+            before = admin.join_version(home, self.host)
+            with open(home / "deploy/windows/agent.ps1", "a", encoding="ascii") as script:
+                script.write("# changed\n")
+            self.assertNotEqual(admin.join_version(home, self.host), before)
+
+    def test_check_logs_in_with_whoami_and_skips_sudo(self):
+        calls = []
+
+        def fake_ssh_check(host_id, kind="linux"):
+            calls.append(kind)
+            return 0, ["jokerbu\\wangh"]
+
+        with tempfile.NamedTemporaryFile() as key, \
+                mock.patch.object(admin, "key_path", lambda host_id: Path(key.name)), \
+                mock.patch.object(admin, "pinned", lambda host_id: True), \
+                mock.patch.object(admin, "ssh_check", fake_ssh_check), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            admin.cmd_check(argparse.Namespace(host_id="win-legion"))
+        self.assertEqual(calls, ["windows"])
+        self.assertIn("没有 sudo", output.getvalue())
 
 
 if __name__ == "__main__":
