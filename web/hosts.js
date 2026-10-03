@@ -2,50 +2,58 @@
 window.REMOTE_TERM_HOSTS = [
   {
     "id": "vps",
-    "name": "VPS",
-    "meta": "入口机",
+    "name": "入口服务器",
+    "meta": "DigitalOcean · VPS",
+    "kind": "linux",
     "path": "/vps/"
   },
   {
     "id": "fa",
-    "name": "财务机",
-    "meta": "fa",
+    "name": "财务服务器",
+    "meta": "阿里云",
+    "kind": "linux",
     "path": "/fa/"
   },
   {
     "id": "tencent-new",
-    "name": "腾讯新机",
-    "meta": "gg",
+    "name": "腾讯云 · 新服务器",
+    "meta": "腾讯云 · gg",
+    "kind": "linux",
     "path": "/tencent-new/"
   },
   {
     "id": "tencent-main",
-    "name": "腾讯大总管",
-    "meta": "Chris",
+    "name": "腾讯云 · 大总管",
+    "meta": "腾讯云 · Chris",
+    "kind": "linux",
     "path": "/tencent-main/"
   },
   {
-    "id": "mbp-dojoy",
-    "name": "另一台 Mac",
-    "meta": "局域网",
-    "path": "/mbp-dojoy/"
-  },
-  {
     "id": "mac-local",
-    "name": "本机 Mac",
-    "meta": "当前电脑",
+    "name": "wanghui 的 Mac",
+    "meta": "账户 wanghui",
+    "kind": "mac",
     "path": "/mac-local/"
   },
   {
+    "id": "mbp-dojoy",
+    "name": "dojoy 的 MacBook Pro",
+    "meta": "账户 dojoy",
+    "kind": "mac",
+    "path": "/mbp-dojoy/"
+  },
+  {
     "id": "mba-chris",
-    "name": "Chris 的 Air",
-    "meta": "MacBook Air",
+    "name": "Chris 的 MacBook Air",
+    "meta": "账户 jokerbu",
+    "kind": "mac",
     "path": "/mba-chris/"
   },
   {
     "id": "win-legion",
     "name": "联想笔记本",
-    "meta": "Windows",
+    "meta": "Windows 11 · 账户 wangh",
+    "kind": "windows",
     "path": "/win-legion/"
   }
 ];

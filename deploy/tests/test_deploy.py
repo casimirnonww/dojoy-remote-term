@@ -91,6 +91,13 @@ class RenderTests(unittest.TestCase):
     def test_committed_hosts_js_is_up_to_date(self):
         self.assertEqual(render_config.main(["--check-web", str(REPO / "web" / "hosts.js")]), 0)
 
+    def test_hosts_js_tells_the_page_each_machine_type(self):
+        # The page picks each card's icon and colour from kind.
+        text = render_config.render_hosts_js(self.hosts)
+        entries = json.loads(text[text.index("["):text.rindex("]") + 1])
+        self.assertEqual([entry["kind"] for entry in entries], [host["kind"] for host in self.hosts])
+        self.assertEqual({entry["kind"] for entry in entries}, {"linux", "mac", "windows"})
+
     def test_placeholders_block_a_real_render(self):
         with tempfile.TemporaryDirectory() as out:
             hosts = str(hosts_with_placeholders(out))

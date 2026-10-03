@@ -34,6 +34,42 @@ const STATUS_INTERVAL_MS = 30000;
 const FRESHNESS_MS = 90000;
 const statusCards = new Map();
 
+// 设备类型：图标和名称（颜色在 app.css 的 .kind-*）。图标是自绘的简单图形；未知类型按服务器显示。
+const SVG_NS = "http://www.w3.org/2000/svg";
+const KINDS = {
+  linux: { label: "服务器", shapes: [
+    ["rect", { x: 3, y: 3.5, width: 18, height: 7, rx: 1.8 }],
+    ["rect", { x: 3, y: 13.5, width: 18, height: 7, rx: 1.8 }],
+    ["path", { d: "M7 7h.01M7 17h.01M11 7h6M11 17h6" }],
+  ] },
+  mac: { label: "Mac 电脑", shapes: [
+    // ⌘：中间一个方框，四角各一个圈
+    ["path", { d: "M9 9H6.5A2.5 2.5 0 1 1 9 6.5V17.5A2.5 2.5 0 1 1 6.5 15H17.5A2.5 2.5 0 1 1 15 17.5V6.5A2.5 2.5 0 1 1 17.5 9Z" }],
+  ] },
+  windows: { label: "Windows 电脑", shapes: [
+    ["rect", { x: 3.5, y: 3.5, width: 7.5, height: 7.5, rx: 1, class: "solid" }],
+    ["rect", { x: 13, y: 3.5, width: 7.5, height: 7.5, rx: 1, class: "solid" }],
+    ["rect", { x: 3.5, y: 13, width: 7.5, height: 7.5, rx: 1, class: "solid" }],
+    ["rect", { x: 13, y: 13, width: 7.5, height: 7.5, rx: 1, class: "solid" }],
+  ] },
+};
+
+function kindOf(host) { return Object.prototype.hasOwnProperty.call(KINDS, host.kind) ? host.kind : "linux"; }
+
+function kindIcon(kind, className) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", className);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  KINDS[kind].shapes.forEach(([tag, attrs]) => {
+    const shape = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs).forEach(name => shape.setAttribute(name, attrs[name]));
+    svg.append(shape);
+  });
+  return svg;
+}
+
 function el(tag, className, value) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -42,11 +78,17 @@ function el(tag, className, value) {
 }
 
 function createStatusCard(host) {
-  const card = el("article", "host-card");
+  const kind = kindOf(host);
+  const card = el("article", "host-card kind-" + kind);
   const heading = el("div", "card-heading");
-  const title = el("h2", "", host.name);
+  const titleRow = el("div", "card-title");
+  const icon = el("span", "kind-badge");
+  icon.append(kindIcon(kind, "kind-icon"));
+  titleRow.append(icon, el("h2", "", host.name));
   const badge = el("span", "status-badge", "尚无数据");
-  heading.append(title, badge);
+  heading.append(titleRow, badge);
+  const type = el("p", "card-type");
+  type.append(el("span", "kind-tag", KINDS[kind].label), el("span", "card-meta", host.meta || ""));
   const hostname = el("p", "machine-name", "—");
   const config = el("dl", "config");
   const configValues = {};
@@ -55,7 +97,7 @@ function createStatusCard(host) {
     config.append(el("dt", "", label), value);
     configValues[key] = value;
   });
-  card.append(heading, hostname, config);
+  card.append(heading, type, hostname, config);
   const gauges = {};
   [["cpu", "CPU 使用率"], ["memory", "内存"], ["disk", "根盘"]].forEach(([key, label]) => {
     const metric = el("div", "metric");
@@ -337,10 +379,14 @@ function renderSessionTabs() {
 function createHostTab(host) {
   const tab = document.createElement("button");
   tab.type = "button";
-  tab.className = "host-tab";
+  const kind = kindOf(host);
+  tab.className = "host-tab kind-" + kind;
   tab.setAttribute("role", "tab");
   tab.setAttribute("aria-selected", "false");
-  tab.append(el("span", "name", host.name), el("span", "meta", host.meta), el("span", "count", "0 个会话"));
+  tab.title = KINDS[kind].label;
+  const text = el("span", "host-tab-text");
+  text.append(el("span", "name", host.name), el("span", "meta", host.meta), el("span", "count", "0 个会话"));
+  tab.append(kindIcon(kind, "kind-icon tab-icon"), text);
   tab.addEventListener("click", () => activateHost(host.id));
   hostTabsEl.appendChild(tab);
   hosts[host.id] = { tab: tab, sessions: [], nextNo: 1 };
