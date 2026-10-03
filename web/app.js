@@ -79,6 +79,7 @@ function el(tag, className, value) {
 }
 
 function createStatusCard(host) {
+  // 紧凑卡片：8 台在一屏内放下。说明文字只在出问题时显示，细节放在悬停提示里。
   const kind = kindOf(host);
   const card = el("article", "host-card kind-" + kind);
   const heading = el("div", "card-heading");
@@ -89,47 +90,42 @@ function createStatusCard(host) {
   const badge = el("span", "status-badge", "尚无数据");
   heading.append(titleRow, badge);
   const type = el("p", "card-type");
-  type.append(el("span", "kind-tag", KINDS[kind].label), el("span", "card-meta", host.meta || ""));
-  const hostname = el("p", "machine-name", "—");
-  const config = el("dl", "config");
-  const configValues = {};
-  [["cpu", "CPU"], ["cores", "核心"], ["system", "系统"], ["arch", "架构"]].forEach(([key, label]) => {
-    const value = el("dd", "", "—");
-    config.append(el("dt", "", label), value);
-    configValues[key] = value;
-  });
-  card.append(heading, type, hostname, config);
+  const hostname = el("span", "machine-name", "");
+  type.append(el("span", "kind-tag", KINDS[kind].label), el("span", "card-meta", host.meta || ""), hostname);
+  const spec = el("p", "card-spec", "—");
+  const system = el("p", "card-spec card-os", "—");
+  const metrics = el("div", "metrics");
   const gauges = {};
-  [["cpu", "CPU 使用率"], ["memory", "内存"], ["disk", "根盘"]].forEach(([key, label]) => {
-    const metric = el("div", "metric");
-    const row = el("div", "metric-heading");
-    const value = el("span", "metric-value", "—");
-    row.append(el("span", "", label), value);
+  [["cpu", "CPU"], ["memory", "内存"], ["disk", "磁盘"]].forEach(([key, label]) => {
+    const row = el("div", "metric");
     const meter = el("div", "meter");
     meter.setAttribute("aria-hidden", "true");
     const fill = el("div", "meter-fill");
     meter.append(fill);
-    metric.append(row, meter);
-    card.append(metric);
-    gauges[key] = { value, fill };
+    const value = el("span", "metric-value", "—");
+    row.append(el("span", "metric-label", label), meter, value);
+    metrics.append(row);
+    gauges[key] = { row, value, fill };
   });
-  const networkRow = el("div", "metric metric-heading");
-  const network = el("span", "metric-value", "↓ — / ↑ —");
-  networkRow.append(el("span", "", "下载 / 上传"), network);
-  const note = el("p", "card-note", "尚未收到采集数据，终端仍可打开。");
+  const networkRow = el("div", "metric metric-network");
+  const network = el("span", "metric-value", "—");
+  networkRow.append(el("span", "metric-label", "网络"), network);
+  metrics.append(networkRow);
+  // 底部左侧：正常时是运行时长和更新时间；离线、过期或数据异常时换成提示，不另占一行。
   const foot = el("div", "card-foot");
-  const times = el("div", "card-times");
-  const uptime = el("div", "", "运行时长：—");
-  const successAt = el("time", "", "最近成功：—");
+  const times = el("p", "card-times");
+  const uptime = el("span", "", "运行 —");
+  const successAt = el("time", "", "");
   times.append(uptime, successAt);
+  const note = el("p", "card-note", "");
   const open = el("button", "btn primary", "打开终端");
   open.type = "button";
   open.setAttribute("aria-label", "打开" + host.name + "终端");
   open.addEventListener("click", () => activateHost(host.id));
-  foot.append(times, open);
-  card.append(networkRow, note, foot);
+  foot.append(times, note, open);
+  card.append(heading, type, spec, system, metrics, foot);
   hostGrid.append(card);
-  statusCards.set(host.id, { card, badge, hostname, configValues, gauges, network, note, uptime, successAt });
+  statusCards.set(host.id, { card, badge, hostname, spec, system, gauges, network, networkRow, times, note, uptime, successAt });
 }
 
 function safeText(value) { return typeof value === "string" && value.trim() ? value.trim().slice(0, 200) : "—"; }
@@ -167,11 +163,26 @@ function durationLabel(seconds) {
   const mins = Math.floor(seconds / 60);
   const days = Math.floor(mins / 1440);
   const hours = Math.floor(mins / 60) % 24;
-  return (days ? days + "天 " : "") + (hours || days ? hours + "小时 " : "") + mins % 60 + "分钟";
+  if (days) return days + "天" + hours + "小时";
+  return hours ? hours + "小时" + mins % 60 + "分" : mins + "分钟";
 }
+// 「已用 / 总量」用总量的单位，例如「14.0 / 15.6 GiB」，比两边各带单位短一半。
 function capacity(used, total) {
   if (!positiveInteger(total) || !validBytes(used) || used > total) return { text: "—", percent: null };
-  return { text: bytesLabel(used) + " / " + bytesLabel(total), percent: used / total * 100 };
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(total) / Math.log(1024)));
+  const scale = Math.pow(1024, index);
+  const fixed = value => (value / scale).toFixed(total / scale >= 100 ? 0 : 1);
+  return { text: fixed(used) + " / " + fixed(total) + " " + units[index], percent: used / total * 100,
+           full: bytesLabel(used) + " / " + bytesLabel(total) };
+}
+// 今天的时间只显示时分秒，其他日子加上月日；完整时间放在悬停提示里。
+function shortTime(value) {
+  const ms = timestamp(value);
+  if (!Number.isFinite(ms)) return "";
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString("zh-CN", { hour12: false });
+  return date.toDateString() === new Date().toDateString() ? time : (date.getMonth() + 1) + "/" + date.getDate() + " " + time;
 }
 function updateGauge(gauge, text, percent) {
   gauge.value.textContent = text;
@@ -206,36 +217,45 @@ function renderStatus() {
     }
     card.badge.textContent = state.label;
     card.badge.className = "status-badge " + state.kind;
-    card.hostname.textContent = safeText(metrics.hostname);
-    card.configValues.cpu.textContent = safeText(metrics.cpu_model);
-    card.configValues.cores.textContent = Number.isInteger(metrics.cpu_cores) && metrics.cpu_cores > 0 && metrics.cpu_cores <= 65536 ? metrics.cpu_cores + " 个逻辑核心" : "—";
-    card.configValues.system.textContent = safeText(metrics.os);
-    card.configValues.arch.textContent = safeText(metrics.arch);
+    card.hostname.textContent = metrics.hostname ? safeText(metrics.hostname) : "";
+    card.hostname.title = card.hostname.textContent;
+    const cores = Number.isInteger(metrics.cpu_cores) && metrics.cpu_cores > 0 && metrics.cpu_cores <= 65536 ? metrics.cpu_cores + " 核" : "";
+    const spec = [metrics.cpu_model ? safeText(metrics.cpu_model) : "", cores, metrics.arch ? safeText(metrics.arch) : ""].filter(Boolean);
+    card.spec.textContent = spec.join(" · ") || "—";
+    card.spec.title = card.spec.textContent;
+    card.system.textContent = safeText(metrics.os);
+    card.system.title = card.system.textContent;
     const cpu = validPercent(metrics.cpu_percent) ? metrics.cpu_percent : null;
     updateGauge(card.gauges.cpu, cpu === null ? "—" : cpu.toFixed(1) + "%", cpu);
     const memory = capacity(metrics.memory_used_bytes, metrics.memory_total_bytes);
     const disk = capacity(metrics.disk_used_bytes, metrics.disk_total_bytes);
     updateGauge(card.gauges.memory, memory.text, memory.percent);
     updateGauge(card.gauges.disk, disk.text, disk.percent);
+    card.gauges.memory.row.title = [memory.full, metrics.memory_note ? safeText(metrics.memory_note) : ""].filter(Boolean).join("\n");
+    card.gauges.disk.row.title = disk.full || "";
     const rate = value => validBytes(value) ? bytesLabel(value) + "/s" : "—";
-    card.network.textContent = "↓ " + rate(metrics.network_rx_bytes_per_second) + " / ↑ " + rate(metrics.network_tx_bytes_per_second);
-    card.network.title = metrics.network_interface ? "网卡：" + safeText(metrics.network_interface) : "";
-    card.uptime.textContent = "运行时长：" + durationLabel(metrics.uptime_seconds);
-    card.successAt.textContent = "最近成功：" + timeLabel(data && data.last_success_at);
-    if (data && Number.isFinite(timestamp(data.last_success_at))) card.successAt.dateTime = data.last_success_at;
+    card.network.textContent = "↓ " + rate(metrics.network_rx_bytes_per_second) + "  ↑ " + rate(metrics.network_tx_bytes_per_second);
+    card.networkRow.title = (metrics.network_interface ? "网卡：" + safeText(metrics.network_interface) + "\n" : "") + "下载 / 上传，采样期间平均速率";
+    card.uptime.textContent = "运行 " + durationLabel(metrics.uptime_seconds);
+    const success = data && data.last_success_at;
+    card.successAt.textContent = Number.isFinite(timestamp(success)) ? "更新 " + shortTime(success) : "";
+    card.successAt.title = Number.isFinite(timestamp(success)) ? "最近成功：" + timeLabel(success) : "";
+    if (Number.isFinite(timestamp(success))) card.successAt.dateTime = success;
     else card.successAt.removeAttribute("datetime");
     const notes = [];
-    if ((state.kind === "unreachable" || state.kind === "stale") && data && data.metrics) notes.push("上次数据");
     if (state.kind === "unreachable") notes.push(data.error ? safeText(data.error) : "最近一次上报未成功");
-    if (state.kind === "stale") notes.push("采集已超过 90 秒或时间异常，等待更新");
-    if (state.kind === "unknown") notes.push("尚未收到采集数据，终端仍可打开");
-    if (state.kind === "invalid") notes.push("采集数据不完整或数值异常，等待下一次采集");
-    if (metrics.memory_note) notes.push(safeText(metrics.memory_note));
-    card.note.textContent = notes.join(" · ") || "当前采样值 · 下载 / 上传为采样期间平均速率";
+    if (state.kind === "stale") notes.push("超过 90 秒没有新数据");
+    if (state.kind === "unknown") notes.push("尚未收到上报");
+    if (state.kind === "invalid") notes.push("数据不完整，等待下一次上报");
+    if (notes.length && Number.isFinite(timestamp(success))) notes.push("上次 " + shortTime(success));
+    card.note.textContent = notes.join(" · ");
+    card.note.title = card.note.textContent + ((state.kind === "unreachable" || state.kind === "stale") && data && data.metrics
+      ? "\n卡片上显示的是上次收到的数据" : "") + (state.kind === "unknown" ? "\n终端仍可打开" : "");
+    card.times.hidden = notes.length > 0;
   });
   statusNotice.classList.toggle("warning", Boolean(statusError));
   statusNotice.textContent = statusError || (snapshot
-    ? "在线 " + onlineCount + " / " + HOSTS.length + " · 数据更新：" + timeLabel(snapshot.generated_at) + " · 数据由各机主动上报"
+    ? "在线 " + onlineCount + " / " + HOSTS.length + " · 更新于 " + shortTime(snapshot.generated_at)
     : "正在读取服务器运行情况…");
   clearTimeout(freshnessTimer);
   if (!document.hidden && Number.isFinite(nextExpiry)) freshnessTimer = setTimeout(renderStatus, Math.max(1, nextExpiry - now + 1));
@@ -346,7 +366,9 @@ function countSessions(hostId) { return hosts[hostId].sessions.length; }
 function updateHostCount(hostId) {
   const h = hosts[hostId];
   const n = countSessions(hostId);
-  h.tab.querySelector(".count").textContent = n + " 个会话";
+  const count = h.tab.querySelector(".count");
+  count.textContent = n ? String(n) : "";
+  count.title = n + " 个会话";
   reconnectBtn.disabled = !activeSessionKey;
   if (overviewVisible) summary.textContent = "已打开会话：" + HOSTS.reduce((total, host) => total + countSessions(host.id), 0);
   if (activeHostId === hostId) {
@@ -384,10 +406,8 @@ function createHostTab(host) {
   tab.className = "host-tab kind-" + kind;
   tab.setAttribute("role", "tab");
   tab.setAttribute("aria-selected", "false");
-  tab.title = KINDS[kind].label;
-  const text = el("span", "host-tab-text");
-  text.append(el("span", "name", host.name), el("span", "meta", host.meta), el("span", "count", "0 个会话"));
-  tab.append(kindIcon(kind, "kind-icon tab-icon"), text);
+  tab.title = KINDS[kind].label + (host.meta ? " · " + host.meta : "");
+  tab.append(kindIcon(kind, "kind-icon tab-icon"), el("span", "name", host.name), el("span", "count", ""));
   tab.addEventListener("click", () => activateHost(host.id));
   hostTabsEl.appendChild(tab);
   hosts[host.id] = { tab: tab, sessions: [], nextNo: 1 };
