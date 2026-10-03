@@ -78,3 +78,17 @@ jobs:
           python-version: "3.12"
       - name: Windows agent, enrollment and join script
         run: python deploy/tests/windows_e2e.py
+
+  macos:
+    # The Mac join script as people run it: bash 3.2 and /usr/bin/python3, as a normal user,
+    # three times in a row, with this machine standing in for the gateway (TLS receiver, sshd
+    # with a tunnel account), then a login through the tunnel.
+    name: macOS (join script end to end)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Mac join script, report, enrollment and tunnel
+        run: python deploy/tests/mac_e2e.py
