@@ -83,10 +83,17 @@ jobs:
     # The Mac join script as people run it: bash 3.2 and /usr/bin/python3, as a normal user,
     # three times in a row, with this machine standing in for the gateway (TLS receiver, sshd
     # with a tunnel account), then a login through the tunnel.
-    name: macOS (join script end to end)
-    runs-on: macos-latest
+    name: macOS ${{ matrix.os }} (join script end to end)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: The real gateway, seen by a Mac's system python3 (informational, no secrets)
+        continue-on-error: true
+        run: /usr/bin/python3 deploy/tests/gateway_probe.py djai.djscz.com
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
