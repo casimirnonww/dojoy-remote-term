@@ -7,6 +7,8 @@
 #
 # The agent only makes outbound HTTPS requests; it reports while you are logged in.
 set -euo pipefail
+# System tools first: /usr/local/bin may hold programs for another CPU (Intel Homebrew on Apple silicon).
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 usage() {
     sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'

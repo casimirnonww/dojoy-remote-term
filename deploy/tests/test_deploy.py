@@ -419,6 +419,31 @@ class MacBashTests(unittest.TestCase):
                     self.assertIsNone(self.BARE.search(line), f"use ${{NAME}} here: {line.strip()}")
 
 
+class JoinScriptToolTests(unittest.TestCase):
+    """An Apple-silicon Mac may carry an Intel /usr/local/bin/python3 ("Bad CPU type in
+    executable"): the join script must use the system's tools, never whatever comes first."""
+
+    def test_only_the_system_python_is_used(self):
+        for number, line in enumerate(admin.JOIN_TEMPLATE.splitlines(), 1):
+            if line.strip().startswith(("echo ", "#")):
+                continue  # messages and comments only mention it
+            with self.subTest(line=number):
+                self.assertNotRegex(line, r"(?<!/usr/bin/)\bpython3\b(?!\S*\.py)",
+                                    f"call /usr/bin/python3 here: {line.strip()}")
+
+    def test_system_tools_come_first_in_path(self):
+        lines = admin.JOIN_TEMPLATE.splitlines()
+        first_command = next(i for i, line in enumerate(lines)
+                             if line and not line.startswith("#") and not line.startswith("set ")
+                             and not line.startswith("export PATH="))
+        export = next(i for i, line in enumerate(lines) if line.startswith('export PATH="/usr/bin:/bin:'))
+        self.assertLess(export, first_command)
+        for script in ("deploy/target/setup_mac.sh", "deploy/agent/install_agent_macos.sh"):
+            with self.subTest(script=script):
+                self.assertIn('\nexport PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"\n',
+                              (REPO / script).read_text(encoding="utf-8"))
+
+
 class JoinVersionTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())

@@ -281,6 +281,9 @@ def build_bundle(home):
 JOIN_TEMPLATE = r"""#!/bin/bash
 # DOJOY 服务器终端：接入 @@NAME@@（@@ID@@）。由 remote-term-admin join 生成，只能用一次。
 set -euo pipefail
+# The system's own tools first: /usr/local/bin may hold programs built for another CPU
+# (e.g. an Intel Homebrew carried over to an Apple-silicon Mac: "Bad CPU type in executable").
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 HOST_ID=@@Q_ID@@
 HOST_NAME=@@Q_NAME@@
 KIND=@@Q_KIND@@
@@ -303,7 +306,15 @@ if [ "$KIND" = mac ]; then
     if [ "$(id -u)" -eq 0 ]; then echo "请不要加 sudo，用 $SSH_USER 账户直接运行。" >&2; exit 1; fi
     if [ "$(id -un)" != "$SSH_USER" ]; then echo "请在 $SSH_USER 账户下运行（当前是 $(id -un)）。" >&2; exit 1; fi
 fi
-command -v python3 >/dev/null || { echo "这台机器没有 python3，请先安装后重试。" >&2; exit 1; }
+if ! /usr/bin/python3 -c 'import sys; sys.exit(sys.version_info < (3, 7))' 2>/dev/null; then
+    if [ "$KIND" = mac ]; then
+        echo "这台 Mac 需要先安装「命令行开发者工具」（里面带 python3）：运行 xcode-select --install，" >&2
+        echo "按弹窗装完后，再粘贴一次接入命令。" >&2
+    else
+        echo "这台机器没有 /usr/bin/python3（3.7 或更新），请先安装后重试。" >&2
+    fi
+    exit 1
+fi
 
 work=$(mktemp -d)
 cleanup() {
@@ -312,7 +323,7 @@ cleanup() {
     case "$0" in /tmp/dojoy-join*.sh) rm -f -- "$0" ;; esac
 }
 trap cleanup EXIT
-printf '%s' "$BUNDLE" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))'     | tar -xzf - -C "$work"
+printf '%s' "$BUNDLE" | /usr/bin/python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))'     | tar -xzf - -C "$work"
 
 echo "== 正在接入 ${HOST_NAME}（${HOST_ID}）=="
 if [ "$KIND" = linux ]; then
@@ -320,7 +331,7 @@ if [ "$KIND" = linux ]; then
     echo "已建立 ops 账户（sudo 密码就是安装入口机时设的 ops 密码）。"
     printf '%s
 ' "$TOKEN" | bash "$work/deploy/agent/install_agent_linux.sh" --url "$REPORT_URL" --token-stdin
-    REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 python3 "$work/status/agent.py" --enroll --url "$ENROLL_URL"
+    REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 "$work/status/agent.py" --enroll --url "$ENROLL_URL"
 else
     bash "$work/deploy/target/setup_mac.sh" --id "$HOST_ID" --gateway "$GATEWAY" --tunnel-port "$TUNNEL_PORT"         --gateway-hostkey "$GATEWAY_HOSTKEY" --pubkey "$TERMINAL_KEY" --no-next-steps
     (umask 077 && printf '%s
