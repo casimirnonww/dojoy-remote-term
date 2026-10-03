@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # DOJOY 服务器终端：在入口机（VPS）上一行安装。
 #
-# 仓库是私有的，所以要用一个只读令牌（fine-grained token，只勾选本仓库的 Contents: Read-only）。
-# 在 VPS 的网页控制台里以 root 粘贴这一行，按提示输入令牌：
+# 在 VPS 的网页控制台里以 root 粘贴这一行（仓库是公开的）：
+#   curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main/deploy/bootstrap.sh | bash
+#
+# 如果仓库改回私有，改用只读令牌（fine-grained token，只勾选本仓库的 Contents: Read-only），
+# 粘贴这一行，按提示输入令牌：
 #   read -rsp 'GitHub 令牌：' T && echo && printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github.raw"\n' "$T" | curl -fsSL -K - -o /root/dojoy-bootstrap.sh 'https://api.github.com/repos/casimirnonww/dojoy-remote-term/contents/deploy/bootstrap.sh?ref=main' && DOJOY_GITHUB_TOKEN="$T" bash /root/dojoy-bootstrap.sh; unset T
 #
 # 它下载本仓库 main 分支的代码到 /opt/remote-term-src，然后运行
 # deploy/gateway/install_gateway.sh。安装过程中会问三样东西：GitHub OAuth App 的
 # Client ID、Client secret，以及 ops 密码。重复运行是安全的（会更新代码，保留已有设置）。
-# 令牌只用来下载代码：不写入磁盘，不出现在命令行参数里，也不传给 install_gateway.sh。
-# 没有 DOJOY_GITHUB_TOKEN 时按公开仓库下载。
+# 有 DOJOY_GITHUB_TOKEN 时，令牌只用来下载代码：不写入磁盘，不出现在命令行参数里，
+# 也不传给 install_gateway.sh。
 set -euo pipefail
 
 REPO="casimirnonww/dojoy-remote-term"
@@ -52,7 +55,7 @@ if ! fetch | tar -xz -C "$download"; then
     if [ -n "$TOKEN" ]; then
         echo "下载失败：令牌不对、已过期，或者建令牌时没有选这个仓库、没有给 Contents 只读权限。" >&2
     else
-        echo "下载失败：仓库是私有的，需要令牌。请按 README「上线步骤」里的那一行命令运行。" >&2
+        echo "下载失败。请确认仓库是公开的（Public）；如果仓库是私有的，用本脚本顶部注释里带令牌的那一行。" >&2
     fi
     exit 1
 fi
