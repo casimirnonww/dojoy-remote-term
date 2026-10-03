@@ -134,7 +134,7 @@ class HostsConfigTests(unittest.TestCase):
     def test_repository_hosts_file_is_valid(self):
         hosts = hosts_config.load_hosts(REPO / "hosts.json")
         self.assertEqual([host["id"] for host in hosts],
-                         ["vps", "fa", "tencent-new", "tencent-main", "mbp-dojoy", "mac-local", "mba-chris", "win-legion"])
+                         ["vps", "fa", "tencent-new", "tencent-main", "mac-local", "mbp-dojoy", "mba-chris", "win-legion"])
         self.assertTrue(all(host["path"] == "/" + host["id"] + "/" for host in hosts))
         self.assertTrue(all(host["ssh_user"] != "root" for host in hosts))
 
