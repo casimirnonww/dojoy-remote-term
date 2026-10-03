@@ -86,16 +86,11 @@ for unit in $(systemctl list-units --all --plain --no-legend 'remote-ttyd@*' | a
         *) systemctl disable --now "$unit" >/dev/null 2>&1 || true; echo "已停用旧的 $unit" ;;
     esac
 done
-# Old nginx sites (Basic Auth entry, port 18443, unauthenticated routes) would clash with ours.
-for site in /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/*; do
-    if [ ! -e "$site" ] && [ ! -L "$site" ]; then
-        continue
-    fi
-    [ "$(basename "$site")" = remote-term.conf ] && continue
-    mkdir -p "$legacy/nginx"
-    mv "$site" "$legacy/nginx/"
-    echo "已移走旧的 nginx 配置 $site"
-done
+# Only old nginx sites that would clash with ours (serving this domain, or taking port 80, 443
+# or the backend an existing 443 SNI router sends this domain to) are moved aside; other sites
+# and the stream router itself stay as they are.
+REMOTE_TERM_HOME="$repo" python3 "$repo/deploy/gateway/remote-term-admin" legacy-nginx \
+    --domain "$domain" --backup "$legacy/nginx"
 
 step "创建系统账户（都没有登录 shell）"
 ensure_user() {

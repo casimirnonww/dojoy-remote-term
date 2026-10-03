@@ -4,6 +4,7 @@ import importlib.util
 import os
 from pathlib import Path
 import io
+import json
 import re
 import subprocess
 import sys
@@ -30,6 +31,19 @@ def load_admin():
 
 
 admin = load_admin()
+
+
+def hosts_with_placeholders(directory):
+    """A copy of hosts.json whose two Tencent hosts have no address yet."""
+    document = json.loads((REPO / "hosts.json").read_text(encoding="utf-8"))
+    for host in document["hosts"]:
+        if host["id"].startswith("tencent-"):
+            host["ssh"]["host"] = "REPLACE_WITH_" + host["id"].upper().replace("-", "_") + "_IP"
+    path = Path(directory) / "hosts.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
 ED25519 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOfjYK2kIUwffyxuDh8gicevgdFkfio49xyfZlNqjwcq"
 
 
@@ -76,10 +90,26 @@ class RenderTests(unittest.TestCase):
 
     def test_placeholders_block_a_real_render(self):
         with tempfile.TemporaryDirectory() as out:
-            self.assertEqual(render_config.main(["--domain", "djai.djscz.com", "--out", out]), 1)
+            hosts = str(hosts_with_placeholders(out))
+            self.assertEqual(render_config.main(["--hosts", hosts, "--domain", "djai.djscz.com", "--out", out]), 1)
             self.assertEqual(render_config.main(
-                ["--domain", "djai.djscz.com", "--out", out, "--allow-placeholders"]), 0)
+                ["--hosts", hosts, "--domain", "djai.djscz.com", "--out", out, "--allow-placeholders"]), 0)
             self.assertTrue((Path(out) / "nginx" / "remote-term.conf").exists())
+
+    def test_public_mode_listens_on_443(self):
+        listens = re.findall(r"(?m)^\s*listen ([^;]+);", self.files["nginx/remote-term.conf"])
+        self.assertEqual(listens, ["80 default_server", "[::]:80 default_server", "443 ssl default_server",
+                                   "[::]:443 ssl default_server", "80", "[::]:80", "443 ssl", "[::]:443 ssl"])
+
+    def test_router_mode_listens_only_on_the_loopback_backend(self):
+        nginx = render_config.render_all(self.hosts, "djai.djscz.com", "127.0.0.1:18443")["nginx/remote-term.conf"]
+        listens = re.findall(r"(?m)^\s*listen ([^;]+);", nginx)
+        self.assertEqual(listens, ["80 default_server", "[::]:80 default_server",
+                                   "127.0.0.1:18443 ssl default_server", "80", "[::]:80", "127.0.0.1:18443 ssl"])
+        self.assertIn("ssl_reject_handshake on;", nginx)
+        for bad in ("0.0.0.0:18443", "18443", "192.0.2.1:443", "127.0.0.1:0", "127.0.0.1:70000"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                render_config.render_all(self.hosts, "djai.djscz.com", bad)
 
 
 class AdminHelperTests(unittest.TestCase):
@@ -165,7 +195,8 @@ class AddressTests(unittest.TestCase):
         self.assertEqual(admin.parse_ssh_g_hostname("hostname vm.example.com\n", "x"), "vm.example.com")
 
     def test_overrides_fill_placeholders_only(self):
-        hosts = load_hosts(REPO / "hosts.json")
+        with tempfile.TemporaryDirectory() as directory:
+            hosts = load_hosts(hosts_with_placeholders(directory))
         admin.apply_address_overrides(hosts, {"tencent-new": "192.0.2.9", "fa": "192.0.2.1",
                                               "tencent-main": "not an ip"})
         by_id = {host["id"]: host["ssh_host"] for host in hosts}
@@ -252,6 +283,122 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn(f"```\n{line}\n```", (REPO / "README.md").read_text())
         # The private-repo variant stays documented in the script.
         self.assertRegex(header, r"(?m)^#   read -rsp .*DOJOY_GITHUB_TOKEN=\"\$T\" bash /root/dojoy-bootstrap\.sh; unset T$")
+
+
+ROUTER = r"""
+# Public 443 SNI router {kept as is}
+map $ssl_preread_server_name $tls_backend {
+    hostnames;
+    "~^b-[0-9a-f]{36}\.base\.example\.com$" work_https;
+    app.example.com       app_https;
+    djai.djscz.com        terminal_https;
+    default               terminal_https;
+}
+
+map $ssl_preread_protocol $backend {
+    ""      plain_dashboard;
+    default $tls_backend;
+}
+
+upstream terminal_https {
+    server 127.0.0.1:18443;
+}
+
+upstream app_https {
+    server 127.0.0.1:18091;
+}
+
+server {
+    listen 0.0.0.0:443;
+    listen [::]:443;
+    proxy_pass $backend;
+    ssl_preread on;
+}
+"""
+
+
+class RouterTests(unittest.TestCase):
+    def backend(self, text, domain="djai.djscz.com"):
+        return admin.sni_router_backend(domain, [admin.strip_nginx_comments(text)])
+
+    def test_finds_the_backend_the_router_sends_this_domain_to(self):
+        self.assertEqual(self.backend(ROUTER), "127.0.0.1:18443")
+        direct = ROUTER.replace("djai.djscz.com        terminal_https;", "djai.djscz.com 127.0.0.1:19000;")
+        self.assertEqual(self.backend(direct), "127.0.0.1:19000")
+        self.assertEqual(self.backend(ROUTER.replace("server 127.0.0.1:18443", "server localhost:18443")),
+                         "127.0.0.1:18443")
+
+    def test_no_stream_server_on_443_means_public_mode(self):
+        self.assertIsNone(self.backend(ROUTER.replace(":443;", ":8443;")))
+        self.assertIsNone(admin.sni_router_backend("djai.djscz.com", []))
+
+    def test_unusable_routers_are_refused(self):
+        cases = {
+            "domain not routed": ROUTER.replace("djai.djscz.com        terminal_https;\n", ""),
+            "public upstream": ROUTER.replace("server 127.0.0.1:18443", "server 192.0.2.1:443"),
+            "two upstream servers": ROUTER.replace("server 127.0.0.1:18443;",
+                                                   "server 127.0.0.1:18443;\n    server 127.0.0.1:18444;"),
+            "proxy protocol": ROUTER.replace("ssl_preread on;", "ssl_preread on;\n    proxy_protocol on;"),
+        }
+        for name, text in cases.items():
+            with self.subTest(name), self.assertRaises(admin.AdminError):
+                self.backend(text)
+
+    def test_stream_blocks_and_their_includes_are_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "stream.d").mkdir()
+            (root / "stream.d" / "router.conf").write_text(ROUTER, encoding="utf-8")
+            (root / "nginx.conf").write_text(
+                "events {}\nhttp {\n    include sites-enabled/*;\n}\n"
+                "# stream { listen 443; }\nstream {\n    include stream.d/*.conf;\n}\n", encoding="utf-8")
+            texts = admin.stream_config_texts(root / "nginx.conf")
+            self.assertEqual(admin.sni_router_backend("djai.djscz.com", texts), "127.0.0.1:18443")
+            (root / "nginx.conf").write_text("events {}\nhttp {}\n", encoding="utf-8")
+            self.assertEqual(admin.stream_config_texts(root / "nginx.conf"), [])
+
+
+class LegacyNginxTests(unittest.TestCase):
+    SITES = {
+        "conf.d/old-terminal.conf": "server {\n    listen 18443 ssl;\n    server_name _;\n}\n",
+        "conf.d/root-shell.conf": "server {\n    listen 18444 ssl;\n    server_name djai.djscz.com;\n}\n",
+        "sites-enabled/default": "server {\n    listen 80 default_server;\n}\n",
+        "sites-enabled/brand.conf": "server {\n    listen 127.0.0.1:18091 ssl;\n"
+                                    "    server_name brand.example.com djai.djscz.com.example.net;\n}\n",
+        "sites-enabled/map-only.conf": "map $http_x $y {\n    default 0;\n}\n",
+        "sites-enabled/commented.conf": "server {\n    # listen 443 ssl;\n    listen 127.0.0.1:18090;\n}\n",
+        "sites-enabled/remote-term.conf": "server {\n    listen 443 ssl;\n    server_name djai.djscz.com;\n}\n",
+    }
+
+    def test_only_sites_that_clash_are_moved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative, text in self.SITES.items():
+                (root / relative).parent.mkdir(exist_ok=True)
+                (root / relative).write_text(text, encoding="utf-8")
+            (root / "sites-enabled" / "gone").symlink_to(root / "nowhere")
+            moved = admin.move_conflicting_sites(
+                "djai.djscz.com", {80, 443, 18443}, root / "backup",
+                (str(root / "conf.d" / "*.conf"), str(root / "sites-enabled" / "*")))
+            self.assertEqual(sorted(path.name for path, _ in moved),
+                             ["default", "gone", "old-terminal.conf", "root-shell.conf"])
+            self.assertEqual(sorted(path.name for path in (root / "backup").iterdir()),
+                             ["default", "gone", "old-terminal.conf", "root-shell.conf"])
+            self.assertTrue((root / "backup" / "gone").is_symlink())
+            self.assertEqual(sorted(path.name for path in (root / "sites-enabled").iterdir()),
+                             ["brand.conf", "commented.conf", "map-only.conf", "remote-term.conf"])
+
+    def test_listen_ports(self):
+        for spec, port in (("80", 80), ("[::]:443", 443), ("127.0.0.1:18443", 18443), ("127.0.0.1", 80),
+                           ("[::1]", 80), ("unix:/run/x.sock", None)):
+            with self.subTest(spec=spec):
+                self.assertEqual(admin.listen_port(spec), port)
+
+    def test_only_public_enrollment_addresses_fill_placeholders(self):
+        for value, public in (("124.221.128.129", True), ("127.0.0.1", False), ("10.0.0.5", False),
+                              ("::1", False), ("", False), (None, False), ("not an ip", False)):
+            with self.subTest(value=value):
+                self.assertEqual(admin.is_public_ip(value), public)
 
 
 if __name__ == "__main__":
