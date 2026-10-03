@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main
 
 **之后**：任何电脑打开 https://djai.djscz.com/ ，用 GitHub 登录即可。终端里登录的是 `ops`，要管理员权限时输入 `sudo` 加 ops 密码。
 
-> ⚠️ 风险提醒（你已知晓）：这台 VPS 在 2026-09-13 被入侵过，这次没有重装。如果入侵者还在里面，他可能看到这台机器上的一切。安装时会先把旧网站、旧采集器和旧终端停用并备份到 `/var/backups/remote-term-legacy-*`（Hermes 和知识库网页也会停）。以后想彻底处理，按 [docs/恢复手册.md](docs/恢复手册.md) 重装即可。
+> ⚠️ 风险提醒（你已知晓）：这台 VPS 在 2026-09-13 被入侵过，这次没有重装。如果入侵者还在里面，他可能看到这台机器上的一切。安装时会停用旧采集器和旧终端，并把**与本站冲突**的旧 nginx 网站配置（提供 djai.djscz.com 的，或占用 80、443、旧终端端口的）移到 `/var/backups/remote-term-legacy-*`；其他网站和已有的 443 分流保持不变。以后想彻底处理，按 [docs/恢复手册.md](docs/恢复手册.md) 重装即可。
 
 旧版材料已移到 [archive/2026-09-06/](archive/2026-09-06/)，仅作留档，不要复用。
 
@@ -52,6 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main
 
 ```
 浏览器 ──HTTPS──▶ nginx（只认 djai.djscz.com；用 IP 访问时直接拒绝 TLS 握手）
+                   │  443 上已有 nginx stream 按域名分流时，本站不占 443，改为监听分流给 djai.djscz.com 的本机端口
                    │  每个请求先过 oauth2-proxy：GitHub 登录 + 该账号的二次验证，只放行指定用户
                    ├─ /、app.js、hosts.js ……   静态页面（严格 CSP）
                    ├─ /status.json            ─▶ receiver（127.0.0.1:8790）

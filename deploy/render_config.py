@@ -24,6 +24,9 @@ TTYD_SOCKET = "/run/remote-term-ttyd/{id}/ttyd.sock"
 PAGE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
             "connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
             "form-action 'none'; object-src 'none'")
+# Behind an existing nginx stream SNI router on 443, the site listens on the router's
+# loopback backend for this domain instead (e.g. 127.0.0.1:18443).
+LOOPBACK_LISTEN = re.compile(r"^(127\.0\.0\.1|\[::1\]):([0-9]{1,5})$")
 COMMON_HEADERS = (
     'add_header Strict-Transport-Security "max-age=31536000" always;',
     'add_header X-Content-Type-Options "nosniff" always;',
@@ -62,9 +65,23 @@ def ttyd_location(host):
     return indent(lines, 4)
 
 
-def render_nginx(hosts, domain, template=TEMPLATE):
+def https_listen_lines(https_listen, default):
+    """The listen directives for the HTTPS servers: public 443, or one loopback backend."""
+    suffix = " default_server" if default else ""
+    if https_listen is None:
+        return [f"listen 443 ssl{suffix};", f"listen [::]:443 ssl{suffix};"]
+    match = LOOPBACK_LISTEN.match(https_listen)
+    if not match or not 0 < int(match.group(2)) < 65536:
+        raise ValueError(f"https_listen must be a loopback address:port, got {https_listen!r}")
+    return [f"# Reached through the nginx stream SNI router on 443, which forwards {https_listen} here.",
+            f"listen {https_listen} ssl{suffix};"]
+
+
+def render_nginx(hosts, domain, template=TEMPLATE, https_listen=None):
     text = Path(template).read_text(encoding="utf-8")
     replacements = {
+        "@@HTTPS_LISTEN_DEFAULT@@": indent(https_listen_lines(https_listen, True), 4),
+        "@@HTTPS_LISTEN@@": indent(https_listen_lines(https_listen, False), 4),
         "@@TTYD_LOCATIONS@@": "\n".join(ttyd_location(host) for host in hosts),
         "@@COMMON_HEADERS@@": None,
         "@@PAGE_CSP@@": PAGE_CSP,
@@ -121,9 +138,9 @@ def render_hosts_js(hosts):
             f"window.REMOTE_TERM_HOSTS = {body};\n")
 
 
-def render_all(hosts, domain):
+def render_all(hosts, domain, https_listen=None):
     files = {
-        "nginx/remote-term.conf": render_nginx(hosts, domain),
+        "nginx/remote-term.conf": render_nginx(hosts, domain, https_listen=https_listen),
         "ssh_config": render_ssh_config(hosts),
         "aliases": "".join(host["id"] + "\n" for host in hosts),
         "web/hosts.js": render_hosts_js(hosts),
@@ -138,6 +155,8 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, help="directory to write all rendered files into")
     parser.add_argument("--allow-placeholders", action="store_true",
                         help="render even if some ssh.host values are still REPLACE_... placeholders")
+    parser.add_argument("--https-listen", metavar="127.0.0.1:PORT",
+                        help="serve HTTPS on this loopback backend of an existing SNI router instead of 443")
     parser.add_argument("--write-web", type=Path, help="only write the page's hosts.js to this path")
     parser.add_argument("--check-web", type=Path, help="fail if this hosts.js differs from hosts.json")
     args = parser.parse_args(argv)
@@ -164,11 +183,13 @@ def main(argv=None):
         parser.error("--domain and --out are required to render the gateway files")
     if not HOSTNAME.match(args.domain) or "." not in args.domain:
         parser.error("--domain must be a fully qualified host name")
+    if args.https_listen and not LOOPBACK_LISTEN.match(args.https_listen):
+        parser.error("--https-listen must be a loopback address:port, e.g. 127.0.0.1:18443")
     pending = placeholders(hosts)
     if pending and not args.allow_placeholders:
         print("hosts.json still has placeholder addresses for: " + ", ".join(pending), file=sys.stderr)
         return 1
-    for relative, content in render_all(hosts, args.domain).items():
+    for relative, content in render_all(hosts, args.domain, args.https_listen).items():
         target = args.out / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

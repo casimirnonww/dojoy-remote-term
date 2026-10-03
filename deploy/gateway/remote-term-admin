@@ -12,6 +12,7 @@ starts its web terminal. Manual order, if you prefer:
 
 import argparse
 import base64
+import glob
 from datetime import datetime, timezone
 import io
 import ipaddress
@@ -35,6 +36,9 @@ WWW = Path(os.environ.get("REMOTE_TERM_WWW", "/var/www/remote-term"))
 NGINX_AVAILABLE = Path("/etc/nginx/sites-available/remote-term.conf")
 NGINX_ENABLED = Path("/etc/nginx/sites-enabled/remote-term.conf")
 NGINX_DEFAULT = Path("/etc/nginx/sites-enabled/default")
+NGINX_CONF = Path("/etc/nginx/nginx.conf")
+# Where other sites live; an old one that would clash with ours is moved aside on install.
+NGINX_SITE_GLOBS = ("/etc/nginx/conf.d/*.conf", "/etc/nginx/sites-enabled/*")
 TTYD_USER = "remote-term"
 RECEIVER_STATUS_URL = "http://127.0.0.1:8790/status.json"
 KEY_TYPES = {"ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa"}
@@ -133,6 +137,132 @@ def parse_ssh_g_hostname(output, alias):
             except ValueError:
                 return None if value == alias else value
     return None
+
+
+def is_public_ip(value):
+    """True for a global unicast address (an enrollment seen through a local proxy is not)."""
+    try:
+        return ipaddress.ip_address(value).is_global
+    except (TypeError, ValueError):
+        return False
+
+
+def strip_nginx_comments(text):
+    return re.sub(r"#[^\n]*", "", text)
+
+
+def nginx_block(text, brace):
+    """Body of the {...} block whose opening brace is text[brace]; braces in quotes don't count
+    (map keys are often regexes such as "~^b-[0-9a-f]{36}\\.example\\.com$")."""
+    depth, quote, index = 0, None, brace
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == "\\":
+                index += 1
+            elif char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:index]
+        index += 1
+    raise AdminError("nginx 配置里的大括号不成对。")
+
+
+def stream_config_texts(nginx_conf=NGINX_CONF):
+    """Every stream {} block of nginx.conf plus the files its include lines pull in."""
+    texts = []
+    text = strip_nginx_comments(read_text(nginx_conf))
+    for match in re.finditer(r"(?m)^\s*stream\s*\{", text):
+        body = nginx_block(text, match.end() - 1)
+        texts.append(body)
+        for pattern in re.findall(r"(?m)^\s*include\s+([^;\s]+)\s*;", body):
+            pattern = pattern if pattern.startswith("/") else str(Path(nginx_conf).parent / pattern)
+            for name in sorted(glob.glob(pattern)):
+                if Path(name).is_file():
+                    texts.append(strip_nginx_comments(Path(name).read_text(encoding="utf-8", errors="replace")))
+    return texts
+
+
+def sni_router_backend(domain, stream_texts):
+    """Where an existing nginx stream SNI router on 443 sends `domain` (e.g. 127.0.0.1:18443),
+    or None if no stream server listens on 443 and the site can take 443 itself."""
+    import render_config
+    text = "\n".join(stream_texts)
+    if not re.search(r"(?m)^\s*listen\s+(?:\S*:)?443(?=[\s;])", text):
+        return None
+    if re.search(r"(?m)^\s*proxy_protocol\s+on\s*;", text):
+        raise AdminError("443 上的 nginx stream 分流开启了 proxy_protocol，本站目前不支持这种接法。")
+    target = None
+    for match in re.finditer(r"map\s+\$ssl_preread_server_name\s+\$\w+\s*\{", text):
+        body = nginx_block(text, match.end() - 1)
+        for key, value in re.findall(r"(\"[^\"]*\"|'[^']*'|[^\s;]+)\s+([^\s;]+)\s*;", body):
+            if key.strip("\"'") == domain:
+                target = value
+    if target is None:
+        raise AdminError(f"443 已由 nginx stream 分流占用，但分流的 map $ssl_preread_server_name 里没有 {domain}。"
+                         f"请加一行「{domain} <upstream>;」，让它指向 127.0.0.1 上一个空闲端口，然后重新运行。")
+    upstreams = {}
+    for match in re.finditer(r"upstream\s+([\w.-]+)\s*\{", text):
+        body = nginx_block(text, match.end() - 1)
+        upstreams[match.group(1)] = re.findall(r"(?m)^\s*server\s+([^\s;]+)", body)
+    servers = [server.replace("localhost:", "127.0.0.1:") for server in upstreams.get(target, [target])]
+    if len(servers) != 1 or not render_config.LOOPBACK_LISTEN.match(servers[0]):
+        raise AdminError(f"分流把 {domain} 转给了 {target}（{'、'.join(servers) or '空'}），"
+                         "本站只能接在单个 127.0.0.1:端口 上。")
+    return servers[0]
+
+
+def https_listen(domain):
+    return sni_router_backend(domain, stream_config_texts())
+
+
+def listen_port(spec):
+    """Port of an nginx listen address: 80, [::]:443, 127.0.0.1:18443, 127.0.0.1 (=80), unix:..."""
+    if spec.startswith("unix:"):
+        return None
+    if spec.isdigit():
+        return int(spec)
+    match = re.search(r":(\d+)$", spec)
+    return int(match.group(1)) if match else 80
+
+
+def conflicting_site(text, domain, ports):
+    """Why an old nginx site would clash with ours (serves the domain, or takes one of our
+    ports), or None if it can stay."""
+    text = strip_nginx_comments(text)
+    for names in re.findall(r"(?m)^\s*server_name\s+([^;]+);", text):
+        if domain in (name.strip("\"'") for name in names.split()):
+            return f"提供 {domain}"
+    for spec in re.findall(r"(?m)^\s*listen\s+([^\s;]+)", text):
+        port = listen_port(spec)
+        if port in ports:
+            return f"监听 {port} 端口"
+    return None
+
+
+def move_conflicting_sites(domain, ports, backup, site_globs=NGINX_SITE_GLOBS):
+    moved = []
+    for pattern in site_globs:
+        for name in sorted(glob.glob(pattern)):
+            path = Path(name)
+            if path.name == "remote-term.conf" or path.is_dir():
+                continue
+            # A dangling link would make nginx -t fail; move it too.
+            if path.exists():
+                reason = conflicting_site(path.read_text(encoding="utf-8", errors="replace"), domain, ports)
+            else:
+                reason = "链接已失效"
+            if reason:
+                Path(backup).mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(Path(backup) / path.name))
+                moved.append((path, reason))
+    return moved
 
 
 def build_bundle(home):
@@ -550,6 +680,17 @@ def try_enable(host_id):
     return True
 
 
+def cmd_legacy_nginx(args):
+    """Move aside old nginx sites that would clash with this one; everything else stays."""
+    listen = https_listen(args.domain)
+    ports = {80, 443} | ({int(listen.rsplit(":", 1)[1])} if listen else set())
+    moved = move_conflicting_sites(args.domain, ports, args.backup)
+    for path, reason in moved:
+        print(f"已移走旧的 nginx 配置 {path}（{reason}，与本站冲突）→ {args.backup}")
+    if not moved:
+        print("没有与本站冲突的旧 nginx 配置。")
+
+
 def cmd_sync(args):
     """Apply enrollments: pin host keys, authorize Mac tunnel keys, fill addresses, start terminals."""
     hosts = hosts_by_id()
@@ -585,7 +726,8 @@ def cmd_sync(args):
             write_file(authorized, replace_tagged_line(read_text(authorized), f"remote-term-tunnel-{host['id']}",
                                                        tunnel_key_line(host, *tunnel)))
         source_ip = document.get("source_ip")
-        if host["ssh_host"].startswith("REPLACE") and source_ip:
+        # Behind an SNI router every request comes from 127.0.0.1: only a public address counts.
+        if host["ssh_host"].startswith("REPLACE") and is_public_ip(source_ip):
             overrides[host["id"]] = source_ip
             rerender = True
         remove_join(host["id"])
@@ -609,7 +751,10 @@ def cmd_apply(args):
     if not domain:
         raise AdminError(f"缺少 {ETC / 'domain'}；请先运行 install_gateway.sh。")
     hosts = list(hosts_by_id().values())
-    files = render_config.render_all(hosts, domain)
+    listen = https_listen(domain)
+    if listen:
+        print(f"443 已由 nginx stream 分流占用：本站改为监听 {listen}，由分流按域名转发过来。")
+    files = render_config.render_all(hosts, domain, https_listen=listen)
     write_file(NGINX_AVAILABLE, files.pop("nginx/remote-term.conf"))
     if not NGINX_ENABLED.is_symlink():
         NGINX_ENABLED.unlink(missing_ok=True)
@@ -672,6 +817,10 @@ def main(argv=None):
     add("join-all", cmd_join_all, "join commands for every host not connected yet (also on the site)", host=False)
     add("sync", cmd_sync, "apply enrollments: pin keys, authorize tunnels, start terminals", host=False)
     add("legacy-ips", cmd_legacy_ips, "fill placeholder addresses from root's old ~/.ssh/config", host=False)
+    legacy_nginx = add("legacy-nginx", cmd_legacy_nginx, "move aside old nginx sites that clash with this one",
+                       host=False)
+    legacy_nginx.add_argument("--domain", required=True)
+    legacy_nginx.add_argument("--backup", required=True, help="directory to move clashing site files into")
     args = parser.parse_args(argv)
 
     if os.geteuid() != 0:

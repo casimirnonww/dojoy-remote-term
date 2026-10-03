@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install nginx and ttyd
-        run: sudo apt-get update -q && sudo apt-get install -y -q nginx ttyd
+        run: sudo apt-get update -q && sudo apt-get install -y -q nginx libnginx-mod-stream ttyd
       - name: JavaScript syntax
         run: |
           node --check web/app.js
@@ -52,6 +52,10 @@ jobs:
           sudo rm -f /etc/nginx/sites-enabled/default
           sudo cp "$out/nginx/remote-term.conf" /etc/nginx/sites-enabled/remote-term.conf
           sudo nginx -t
+      - name: Behind an existing 443 SNI router (starts nginx; -t cannot see clashing listeners)
+        run: |
+          sudo systemctl stop nginx
+          sudo bash deploy/tests/router_smoke.sh
       - name: systemd units
         run: |
           units=$(mktemp -d)

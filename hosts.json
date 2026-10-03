@@ -20,14 +20,14 @@
       "name": "腾讯新机",
       "meta": "gg",
       "kind": "linux",
-      "ssh": { "host": "REPLACE_WITH_TENCENT_NEW_IP", "port": 22, "user": "ops" }
+      "ssh": { "host": "124.221.128.129", "port": 22, "user": "ops" }
     },
     {
       "id": "tencent-main",
       "name": "腾讯大总管",
       "meta": "Chris",
       "kind": "linux",
-      "ssh": { "host": "REPLACE_WITH_TENCENT_MAIN_IP", "port": 22, "user": "ops" }
+      "ssh": { "host": "154.8.175.155", "port": 22, "user": "ops" }
     },
     {
       "id": "mbp-dojoy",
