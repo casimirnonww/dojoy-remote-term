@@ -244,6 +244,13 @@ else
 fi
 
 step "TLS 证书（Let's Encrypt）"
+# Let's Encrypt reaches this machine on port 80, now and at every renewal; the site is on 443.
+ufw_status=$(ufw status 2>/dev/null || true)
+if [[ "$ufw_status" == *"Status: active"* ]]; then
+    ufw allow 80/tcp >/dev/null
+    ufw allow 443/tcp >/dev/null
+    echo "本机防火墙 ufw 已放行 80 和 443。"
+fi
 if [ ! -f "/etc/letsencrypt/live/$domain/fullchain.pem" ]; then
     # Temporary HTTP-only site so Let's Encrypt can reach the challenge directory.
     cat > /etc/nginx/sites-available/remote-term.conf <<NGINX
@@ -264,8 +271,19 @@ NGINX
     else
         contact=(--register-unsafely-without-email)
     fi
-    certbot certonly --webroot -w /var/www/letsencrypt -d "$domain" "${contact[@]}" \
-        --agree-tos --non-interactive --deploy-hook "systemctl reload nginx"
+    if ! certbot certonly --webroot -w /var/www/letsencrypt -d "$domain" "${contact[@]}" \
+        --agree-tos --non-interactive --deploy-hook "systemctl reload nginx"; then
+        cat >&2 <<EOF
+
+证书申请失败。最常见的原因是外网连不上这台机器的 80 端口（上面的报错里有 "Timeout during connect"）。
+请这样处理：
+  1. 打开 DigitalOcean → 左侧 Networking → Firewalls。如果有防火墙应用在这台机器上，点进去，
+     在 Inbound Rules 里点 New rule，加 HTTP 和 HTTPS 两条（来源保持 All IPv4、All IPv6），保存。
+  2. 确认域名 $domain 解析到这台机器的公网 IP。
+  3. 重新运行同一行安装命令。已经输入过的 Client ID、Client secret 和 ops 密码都保留着，不会再问。
+EOF
+        exit 1
+    fi
 fi
 
 step "生成并安装 nginx / ttyd / SSH 配置"
