@@ -247,8 +247,11 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse((self.out / "curl.argv").exists())
 
     def test_readme_shows_the_same_one_line_command(self):
-        line = re.search(r"#   (read -rsp .*unset T)$", (REPO / "deploy" / "bootstrap.sh").read_text(), re.M).group(1)
+        header = (REPO / "deploy" / "bootstrap.sh").read_text()
+        line = re.search(r"^#   (curl -fsSL https://raw\.githubusercontent\.com/\S+ \| bash)$", header, re.M).group(1)
         self.assertIn(f"```\n{line}\n```", (REPO / "README.md").read_text())
+        # The private-repo variant stays documented in the script.
+        self.assertRegex(header, r"(?m)^#   read -rsp .*DOJOY_GITHUB_TOKEN=\"\$T\" bash /root/dojoy-bootstrap\.sh; unset T$")
 
 
 if __name__ == "__main__":
