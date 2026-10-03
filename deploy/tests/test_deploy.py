@@ -496,6 +496,121 @@ class MacLaunchAgentTests(unittest.TestCase):
                 self.assertNotIn('launchctl bootstrap "gui/', text)
 
 
+class JoinAllTests(unittest.TestCase):
+    """Re-running the installer ends with join-all. It must never revoke a token a machine is
+    using: not for a machine that has joined but whose terminal cannot be enabled (a firewall
+    in the way), and not for a link that is refreshed because the code changed."""
+
+    TOKEN_LINE = re.compile(r"^(?:TOKEN=|\$Token = ')([A-Za-z0-9_-]+)'?\r?$", re.M)
+
+    def setUp(self):
+        from receiver import TokenStore
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)])
+        etc = self.tmp / "etc"
+        etc.mkdir()
+        (etc / "domain").write_text("djai.djscz.com\n")
+        (etc / "ops-password.hash").write_text("$6$salt$hash\n")
+        (etc / "agent-tokens.json").write_text('{"tokens": {}}\n')
+        hostkey = self.tmp / "ssh_host_ed25519_key.pub"
+        hostkey.write_text(ED25519 + " root@gateway\n")
+        blob = ED25519.split()[1]
+        disabled = subprocess.CompletedProcess([], 0, stdout="disabled\n", stderr="")
+        for patch in (mock.patch.object(admin, "ETC", etc),
+                      mock.patch.object(admin, "JOIN_DIR", self.tmp / "join"),
+                      mock.patch.object(admin, "WWW", self.tmp / "www"),
+                      mock.patch.object(admin, "GATEWAY_HOSTKEY", hostkey),
+                      mock.patch.object(admin.shutil, "chown"),
+                      # No web terminal can be enabled here (as for the Tencent hosts).
+                      mock.patch.object(admin, "systemctl", return_value=disabled),
+                      mock.patch.object(admin, "ensure_key",
+                                        side_effect=lambda host_id: admin.terminal_key_line(host_id, "ssh-ed25519", blob))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.etc = etc
+        self.tokens = TokenStore(etc / "agent-tokens.json")
+        self.hosts = {host["id"]: host for host in load_hosts(REPO / "hosts.json")}
+
+    def join_all(self):
+        with mock.patch("sys.stdout", io.StringIO()):
+            admin.cmd_join_all(argparse.Namespace())
+
+    def pin(self, host_id):
+        with open(self.etc / "known_hosts", "a", encoding="utf-8") as known:
+            known.write(f"{host_id} {ED25519}\n")
+
+    def link(self, host_id):
+        entry = admin.joins()[host_id]
+        script = (admin.JOIN_DIR / entry["file"]).read_text(encoding="utf-8")
+        return entry, script, self.TOKEN_LINE.search(script).group(1)
+
+    def test_rerunning_the_installer_keeps_a_joined_machines_token(self):
+        # Joined (host key pinned) and reporting, but its terminal cannot be enabled.
+        token = self.tokens.issue("tencent-new")
+        self.pin("tencent-new")
+        for _ in range(2):
+            self.join_all()
+            self.assertEqual(self.tokens.identify(token), "tencent-new")
+        self.assertNotIn("tencent-new", admin.joins())
+
+    def test_rerunning_the_installer_keeps_unused_links(self):
+        self.join_all()
+        before = {host_id: self.link(host_id) for host_id in admin.joins()}
+        self.assertEqual(set(before), set(self.hosts) - {"vps"})
+        self.join_all()
+        for host_id, (entry, _, token) in before.items():
+            with self.subTest(host=host_id):
+                again, _, token_again = self.link(host_id)
+                self.assertEqual((again["secret"], token_again), (entry["secret"], token))
+                self.assertEqual(self.tokens.identify(token), host_id)
+
+    def test_new_code_refreshes_the_script_but_keeps_address_and_token(self):
+        for host_id in ("mac-local", "win-legion", "fa"):
+            with self.subTest(host=host_id):
+                host = self.hosts[host_id]
+                admin.make_join(host, "djai.djscz.com")
+                entry, _, token = self.link(host_id)
+                # The machine ran it part way: its agent already reports with this token.
+                admin.make_join(dict(host, name="改过名的机器"), "djai.djscz.com")
+                again, script, token_again = self.link(host_id)
+                self.assertNotEqual(again["version"], entry["version"])
+                self.assertIn("改过名的机器", script)
+                self.assertEqual((again["secret"], again["file"], token_again),
+                                 (entry["secret"], entry["file"], token))
+                self.assertEqual(self.tokens.identify(token), host_id)
+
+    def test_links_made_before_tokens_were_kept_still_keep_theirs(self):
+        for host_id in ("mac-local", "win-legion"):
+            with self.subTest(host=host_id):
+                admin.make_join(self.hosts[host_id], "djai.djscz.com")
+                _, _, token = self.link(host_id)
+                data = admin.joins()
+                data[host_id].pop("token", None)  # as written by the old code
+                admin.save_joins(data)
+                admin.make_join(dict(self.hosts[host_id], name="新名字"), "djai.djscz.com")
+                self.assertEqual(self.link(host_id)[2], token)
+                self.assertEqual(self.tokens.identify(token), host_id)
+
+    def test_a_joined_machine_with_an_unused_link_keeps_the_link(self):
+        # Re-joining on purpose (or recovering): the link stays until it is used.
+        admin.make_join(self.hosts["fa"], "djai.djscz.com")
+        entry, _, token = self.link("fa")
+        self.pin("fa")
+        self.join_all()
+        self.assertEqual(self.link("fa")[0]["secret"], entry["secret"])
+        self.assertEqual(self.tokens.identify(token), "fa")
+
+    def test_force_makes_a_new_link_and_token(self):
+        admin.make_join(self.hosts["mac-local"], "djai.djscz.com")
+        entry, _, token = self.link("mac-local")
+        admin.make_join(self.hosts["mac-local"], "djai.djscz.com", force=True)
+        again, _, token_again = self.link("mac-local")
+        self.assertNotEqual(again["secret"], entry["secret"])
+        self.assertFalse((admin.JOIN_DIR / entry["file"]).exists())
+        self.assertIsNone(self.tokens.identify(token))
+        self.assertEqual(self.tokens.identify(token_again), "mac-local")
+
+
 class JoinPythonCheckTests(unittest.TestCase):
     """The join script's first check: a Mac whose /usr/bin/python3 is Xcode's refuses to run it
     until the Xcode license is accepted; say that, not "install the developer tools"."""

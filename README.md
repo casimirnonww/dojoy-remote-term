@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/casimirnonww/dojoy-remote-term/main
 - **三台 Mac**：在那台 Mac 上用对应账户（wanghui 的 Mac 用 wanghui，dojoy 的 MacBook Pro 用 dojoy，Chris 的 MacBook Air 用 jokerbu）打开「终端」App，粘贴它那一行，回车。Mac 需要开着「系统设置 → 通用 → 共享 → 远程登录」。
 - **Windows 笔记本**：用 wangh 账户登录，在开始菜单上点右键，选「终端(管理员)」，粘贴它那一行，回车。脚本会开启 Windows 自带的 OpenSSH 服务（只监听本机、只认密钥），并装好开机自动运行的隧道和上报程序。
 
-每台粘贴完大约 1 分钟，网页上就会显示这台机器「在线」，终端也能直接打开，不用再回 VPS 做任何事。每条接入命令只能用一次，用完自动作废。
+每台粘贴完大约 1 分钟，网页上就会显示这台机器「在线」，终端也能直接打开，不用再回 VPS 做任何事。每条接入命令只能用一次，用完自动作废；用之前一直有效，更新入口机也不会让它失效。
 
 **之后**：任何电脑打开 https://djai.djscz.com/ ，用 GitHub 登录即可。终端里登录的是 `ops`，要管理员权限时输入 `sudo` 加 ops 密码。
 
@@ -113,7 +113,7 @@ archive/2026-09-06/       旧版报告、回执与配置（已失效）
 | 轮换某台机器的终端钥匙 | `sudo remote-term-admin keygen <id> --force`，再 `join <id> --force` 重新接入 |
 | 轮换或作废上报 token | `sudo remote-term-admin token <id>` / `revoke-token <id>` |
 | 停用某台机器的终端 | `sudo remote-term-admin disable <id>` |
-| 更新代码 | 在 VPS 上重新粘贴「上线步骤」第 2 步那一行（可重复执行，保留密钥、token 和证书） |
+| 更新代码 | 在 VPS 上重新粘贴「上线步骤」第 2 步那一行（可重复执行，保留密钥、token 和证书；已接入的机器不受影响，不用重新接入） |
 | 日志 | `journalctl -u remote-ttyd@<id> -u remote-term-receiver -u oauth2-proxy -u nginx` |
 | 证书申请报 `Timeout during connect` | 外网连不上本机 80 端口：在 DigitalOcean 云防火墙放行 HTTP 和 HTTPS，再重新粘贴第 2 步那一行（已输入的不会再问） |
 

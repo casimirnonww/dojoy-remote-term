@@ -665,11 +665,6 @@ def remove_join(host_id):
         save_joins(data)
 
 
-def enrolled(host_id):
-    return pinned(host_id) and systemctl("is-enabled", f"remote-ttyd@{host_id}.service",
-                                         check=False).stdout.strip() == "enabled"
-
-
 def join_version(home, host):
     """Fingerprint of everything a join script carries (template, bundled files, the host's
     entry). An unused link made from other code or settings is replaced, so a fix reaches it."""
@@ -684,8 +679,28 @@ def join_version(home, host):
     return digest.hexdigest()[:16]
 
 
+LINK_TOKEN = re.compile(r"^(?:TOKEN=|\$Token = ')([A-Za-z0-9_-]+)'?\r?$", re.M)
+
+
+def link_token(entry, host_id):
+    """The token an unused link carries, if it is still this host's token. Links made before
+    joins.json kept it have it only in their script (bash TOKEN=..., PowerShell $Token = '...')."""
+    token = entry.get("token")
+    if not token:
+        match = LINK_TOKEN.search(read_text(JOIN_DIR / entry.get("file", f"{entry['secret']}.sh")))
+        token = match.group(1) if match else None
+    from receiver import TokenStore
+    if token and TokenStore(ETC / "agent-tokens.json").identify(token) == host_id:
+        return token
+    return None
+
+
 def make_join(host, domain, force=False):
-    """Create (or reuse) this host's one-time join script; return the command to paste."""
+    """Create this host's join link, or refresh its script for new code; return the command.
+
+    An update never revokes a token: a refreshed link keeps its address and its token, so a
+    machine that already ran it keeps reporting, and a copied command keeps working. Only
+    join --force, token and revoke-token change or revoke one."""
     data = joins()
     entry = data.get(host["id"])
     version = join_version(HOME, host)
@@ -697,21 +712,26 @@ def make_join(host, domain, force=False):
         raise AdminError("缺少 ops 密码哈希；请重新运行 install_gateway.sh。")
     gateway_hostkey = " ".join(read_text(GATEWAY_HOSTKEY).split()[:2])
     from receiver import TokenStore
-    token = TokenStore(ETC / "agent-tokens.json").issue(host["id"])
+    keep = entry if entry and not force else None
+    token = link_token(keep, host["id"]) if keep else None
+    if token is None:
+        token = TokenStore(ETC / "agent-tokens.json").issue(host["id"])
     if host["kind"] == "windows":
         script = build_windows_join_script(host, domain, token, ensure_key(host["id"]), HOME, gateway_hostkey)
     else:
         script = build_join_script(host, domain, token, ensure_key(host["id"]), build_bundle(HOME),
                                    password_hash if host["kind"] == "linux" else "", gateway_hostkey)
-    if entry:
-        (JOIN_DIR / entry.get("file", f"{entry['secret']}.sh")).unlink(missing_ok=True)
-    secret = secrets.token_hex(16)
+    secret = keep["secret"] if keep else secrets.token_hex(16)
     name = join_file_name(host["kind"], secret)
     JOIN_DIR.mkdir(mode=0o750, exist_ok=True)
     shutil.chown(JOIN_DIR, "root", NGINX_GROUP)
     write_file(JOIN_DIR / name, script, mode=0o640, owner=("root", NGINX_GROUP))
-    data[host["id"]] = {"secret": secret, "file": name, "version": version,
-                        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    if entry and entry.get("file", f"{entry['secret']}.sh") != name:
+        (JOIN_DIR / entry.get("file", f"{entry['secret']}.sh")).unlink(missing_ok=True)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # The plaintext token sits here (root only) as it does in the script, until the link is used.
+    data[host["id"]] = {"secret": secret, "file": name, "version": version, "token": token,
+                        "created_at": keep.get("created_at", now) if keep else now}
     save_joins(data)
     return join_command(domain, secret, host["kind"])
 
@@ -743,7 +763,7 @@ def write_join_page(domain):
         page.unlink(missing_ok=True)
         return "所有机器都已接入。"
     text = ("DOJOY 服务器终端：接入其他机器\n\n"
-            "每台机器只需要做一次。每条命令只能用一次，接入成功后自动作废。\n"
+            "每台机器只需要做一次。每条命令只能用一次，接入成功后自动作废；在那之前一直有效，更新入口机也不会让它失效。\n"
             "粘贴完大约 1 分钟后，回到网页刷新，就能看到这台机器并打开终端。\n\n"
             + "\n".join(sections))
     write_file(page, text)
@@ -752,9 +772,15 @@ def write_join_page(domain):
 
 def cmd_join_all(args):
     domain = domain_name()
+    outstanding = joins()
     for host in hosts_by_id().values():
-        if host["id"] != "vps" and not enrolled(host["id"]):
-            make_join(host, domain)
+        # A machine that has joined (host key pinned) gets no new link, even while its web
+        # terminal waits to be enabled (sync keeps retrying that): a new link would mean a new
+        # token, and the machine's own token would stop working. Machines that never joined,
+        # or still have an unused link, get theirs (refreshed for new code, same token).
+        if host["id"] == "vps" or (pinned(host["id"]) and host["id"] not in outstanding):
+            continue
+        make_join(host, domain)
     print(write_join_page(domain))
 
 
