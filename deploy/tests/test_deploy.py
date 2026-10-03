@@ -419,6 +419,34 @@ class MacBashTests(unittest.TestCase):
                     self.assertIsNone(self.BARE.search(line), f"use ${{NAME}} here: {line.strip()}")
 
 
+class MacRegexTests(unittest.TestCase):
+    """macOS regcomp allows repeat counts up to RE_DUP_MAX = 255: a bigger bound makes the pattern
+    invalid, so [[ x =~ ... ]] fails for every input (Linux allows 32767 and never shows it)."""
+
+    def test_repeat_counts_fit_macos(self):
+        sources = {str(path.relative_to(REPO)): path.read_text(encoding="utf-8")
+                   for path in sorted(REPO.rglob("*.sh")) if "archive" not in path.parts}
+        sources["remote-term-admin JOIN_TEMPLATE"] = admin.JOIN_TEMPLATE
+        for name, text in sources.items():
+            for number, line in enumerate(text.splitlines(), 1):
+                if "=~" not in line:
+                    continue
+                for bound in re.findall(r"\{(\d+)(?:,(\d*))?\}", line):
+                    with self.subTest(source=name, line=number):
+                        self.assertLessEqual(max(int(value) for value in bound if value), 255, line.strip())
+
+    def test_token_check_accepts_real_tokens_only(self):
+        script = (REPO / "deploy/agent/install_agent_linux.sh").read_text(encoding="utf-8")
+        check = next(line for line in script.splitlines() if line.startswith('if ! [[ "$token" =~'))
+        check += " echo bad; else echo ok; fi"
+        for token, expected in (("a" * 43, "ok"), ("Ab-_9" * 8, "ok"), ("short", "bad"), ("x" * 513, "bad"),
+                                ("has space" * 4, "bad"), ("a" * 30 + "$", "bad")):
+            with self.subTest(token=token[:12]):
+                result = subprocess.run(["bash", "-c", check], env={"token": token, "PATH": os.environ["PATH"]},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.stdout.strip(), expected)
+
+
 class JoinScriptToolTests(unittest.TestCase):
     """An Apple-silicon Mac may carry an Intel /usr/local/bin/python3 ("Bad CPU type in
     executable"): the join script must use the system's tools, never whatever comes first."""
