@@ -15,7 +15,9 @@
 #   * creates a tunnel-only key and a LaunchAgent that keeps `ssh -N -R` running as the
 #     gateway's restricted "tunnel" account (pinned gateway host key);
 #   * prints what to run on the gateway next.
-set -euo pipefail
+set -Eeuo pipefail
+# Say which command stopped the script (the command as written: values are not expanded).
+trap 'echo "出错：$(basename "$0") 第 ${LINENO} 行：${BASH_COMMAND}" >&2' ERR
 # System tools first: /usr/local/bin may hold programs for another CPU (Intel Homebrew on Apple silicon).
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
@@ -23,6 +25,31 @@ usage() {
     sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     exit 64
 }
+
+# --- start_launch_agent: the same in setup_mac.sh and install_agent_macos.sh ---
+# (Re)load a LaunchAgent. It may have been switched off (launchctl disable, or System Settings ->
+# General -> Login Items -> Allow in the Background), so switch it back on first. bootout can
+# return before launchd has let go of the old job, so bootstrap is retried for a while.
+start_launch_agent() {
+    local label=$1 plist=$2 domain attempt
+    domain="gui/$(id -u)"
+    launchctl bootout "$domain/$label" 2>/dev/null || true
+    launchctl enable "$domain/$label" 2>/dev/null || true
+    for attempt in 1 2 3 4 5; do
+        if launchctl bootstrap "$domain" "$plist" 2>/dev/null; then
+            return 0
+        fi
+        sleep "$attempt"
+    done
+    if launchctl bootstrap "$domain" "$plist"; then
+        return 0
+    fi
+    echo "无法启动后台服务 ${label}（launchctl 的报错见上一行）。" >&2
+    echo "请打开「系统设置 → 通用 → 登录项与扩展」，在「允许在后台」里打开 ssh、python3" >&2
+    echo "或带 dojoy / remote-term 字样的项目，然后再粘贴一次接入命令。" >&2
+    return 1
+}
+# --- end start_launch_agent ---
 
 host_id=""
 gateway=""
@@ -54,6 +81,14 @@ fi
 case "$HOME" in
     *'&'* | *'<'* | *'>'* | *'"'*) echo "HOME 路径含特殊字符，无法写入 LaunchAgent。" >&2; exit 1 ;;
 esac
+# The web terminal logs in through this Mac's own sshd: without Remote Login there is nothing to
+# reach (and no host key to enroll). Check before changing anything.
+if ! nc -z -G 2 127.0.0.1 22 2>/dev/null; then
+    echo "这台 Mac 没有开启「远程登录」，网页终端要靠它登录。" >&2
+    echo "请到「系统设置 → 通用 → 共享」打开「远程登录」，点旁边的 ⓘ，「允许访问」选「仅这些用户」" >&2
+    echo "并只留 $(id -un)，然后再粘贴一次接入命令。" >&2
+    exit 1
+fi
 
 # Return "type blob" for the first SSH public key found in the given text.
 extract_key() {
@@ -82,9 +117,13 @@ retired="$agents/retired-$(date +%Y%m%d%H%M%S)"
 for label in com.dojoy.reverse-ssh-hermes local.codex.controller-reverse-ssh-hermes; do
     if [ -f "$agents/$label.plist" ]; then
         launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-        mkdir -p "$retired"
-        mv "$agents/$label.plist" "$retired/"
-        echo "已停用旧隧道 ${label}（plist 移到 ${retired}）。"
+        # Also keep it from starting again at the next login, should moving the file fail.
+        launchctl disable "gui/$(id -u)/$label" 2>/dev/null || true
+        if mkdir -p "$retired" && mv "$agents/$label.plist" "$retired/"; then
+            echo "已停用旧隧道 ${label}（plist 移到 ${retired}）。"
+        else
+            echo "已停用旧隧道 ${label}，但移不走它的 plist；以后可手动删除：sudo rm '$agents/$label.plist'" >&2
+        fi
     fi
 done
 
@@ -164,15 +203,8 @@ cat > "$plist" <<PLIST
 </plist>
 PLIST
 plutil -lint "$plist" >/dev/null
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist"
+start_launch_agent "$label" "$plist"
 echo "隧道 LaunchAgent 已启动（日志：${log}）。"
-
-if ! nc -z -G 2 127.0.0.1 22 2>/dev/null; then
-    echo
-    echo "注意：本机没有开启「远程登录」。请到 系统设置 → 通用 → 共享 → 远程登录 打开，"
-    echo "并只允许当前用户（$(id -un)）。"
-fi
 
 # Join scripts enroll the keys automatically, so there is nothing to copy by hand.
 [ "$next_steps" -eq 1 ] || exit 0

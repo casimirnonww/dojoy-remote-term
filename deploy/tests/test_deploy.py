@@ -7,6 +7,7 @@ from pathlib import Path
 import io
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -472,6 +473,48 @@ class JoinScriptToolTests(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn('\nexport PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"\n',
                               (REPO / script).read_text(encoding="utf-8"))
+
+
+class MacLaunchAgentTests(unittest.TestCase):
+    def test_both_mac_scripts_load_agents_the_same_way(self):
+        def block(relative):
+            text = (REPO / relative).read_text(encoding="utf-8")
+            return text[text.index("# --- start_launch_agent"):text.index("# --- end start_launch_agent ---")]
+        self.assertEqual(block("deploy/target/setup_mac.sh"), block("deploy/agent/install_agent_macos.sh"))
+        for relative in ("deploy/target/setup_mac.sh", "deploy/agent/install_agent_macos.sh"):
+            with self.subTest(script=relative):
+                text = (REPO / relative).read_text(encoding="utf-8")
+                # Every load goes through the helper (it switches the agent back on and retries).
+                self.assertEqual(text.count('launchctl bootstrap "$domain" "$plist"'), 2)
+                self.assertNotIn('launchctl bootstrap "gui/', text)
+
+
+class JoinPythonCheckTests(unittest.TestCase):
+    """The join script's first check: a Mac whose /usr/bin/python3 is Xcode's refuses to run it
+    until the Xcode license is accepted; say that, not "install the developer tools"."""
+
+    def run_check(self, kind, python_output, python_status):
+        lines = admin.JOIN_TEMPLATE.splitlines()
+        start = next(i for i, line in enumerate(lines) if "python_check=$(" in line)
+        end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
+        block = "\n".join(lines[start:end + 1]).replace("/usr/bin/python3 -c", "fake_python -c")
+        script = (f"KIND={kind}\nfake_python() {{ echo {shlex.quote(python_output)} >&2; return {python_status}; }}\n"
+                  + block + "\necho passed\n")
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def test_messages(self):
+        license_text = ("You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild "
+                        "-license' from within a Terminal window to review and agree to the Xcode license.")
+        for kind, output, status, expected in (
+                ("mac", license_text, 69, "xcodebuild -license accept"),
+                ("mac", "xcode-select: note: No developer tools were found, requesting install.", 1,
+                 "xcode-select --install"),
+                ("linux", "", 1, "没有 /usr/bin/python3")):
+            with self.subTest(kind=kind, expected=expected):
+                result = self.run_check(kind, output, status)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(expected, result.stderr)
+        self.assertIn("passed", self.run_check("mac", "", 0).stdout)
 
 
 class JoinVersionTests(unittest.TestCase):
