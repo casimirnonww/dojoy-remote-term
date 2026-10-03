@@ -8,8 +8,10 @@
    key logs in to 127.0.0.1 with `whoami`. (Skipped, and said so, if the OpenSSH Server
    capability cannot be installed on the machine.)
 4. The lock-down a fresh OpenSSH install gets (127.0.0.1 only, keys only) is valid for sshd.
-5. The whole join script runs, pointed at the local receiver: scheduled tasks as SYSTEM, the
-   tunnel key with its ACL, the first report and the enrollment with the tunnel key.
+5. The whole join script runs, pointed at the local receiver and with this machine's own sshd
+   standing in for the gateway: scheduled tasks as SYSTEM, the tunnel key's ACL, the first
+   report, the enrollment, and then a real tunnel: the SYSTEM-run ssh opens the forwarded
+   port, and the terminal key logs in through it.
 
 Run: python deploy/tests/windows_e2e.py
 """
@@ -18,6 +20,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import secrets
 from pathlib import Path
 import shutil
 import socket
@@ -192,9 +195,21 @@ def check_sshd_lockdown(join, work):
     print("sshd lock-down: OK")
 
 
+def wait_for_tcp(port, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(1)
+    return False
+
+
 def check_full_join(admin, work, host, token):
     terminal = keypair(work / "full_terminal_key")
-    gateway = (work / "gateway_key.pub").read_text().strip()
+    ssh_dir = Path(os.environ["ProgramData"]) / "ssh"
+    # This machine's sshd plays the gateway: the tunnel pins its host key.
+    gateway = " ".join((ssh_dir / "ssh_host_ed25519_key.pub").read_text().split()[:2])
     script = admin.build_windows_join_script(host, "127.0.0.1", token, terminal.read_text(), REPO, gateway)
     base = f"http://127.0.0.1:{PORT}"
     # The gateway is not here: send the report and the enrollment to the local receiver.
@@ -216,15 +231,37 @@ def check_full_join(admin, work, host, token):
         acl = subprocess.run(["icacls", str(key)], capture_output=True, text=True,
                              encoding="utf-8", errors="replace").stdout
         print(acl)
-        assert "Administrators" in acl and "SYSTEM" in acl and "Users" not in acl, acl
+        entries = [line for line in acl.splitlines() if ":(" in line]
+        assert len(entries) == 2 and "Administrators" in acl and "SYSTEM" in acl, acl
+        assert USER.lower() not in acl.lower(), "the tunnel key is still open to the account that made it"
         enrollment = json.loads((work / "enroll" / f"{host['id']}.json").read_text(encoding="utf-8"))
         tunnel_public = " ".join(Path(str(key) + ".pub").read_text().split()[:2])
         assert enrollment["tunnel_key"] == tunnel_public, (enrollment, tunnel_public)
         assert len(enrollment["host_keys"]) >= 1, enrollment
         print("full join: OK")
+
+        # A "tunnel" account like the gateway's, allowed to forward with the generated tunnel key.
+        password = "Dj!" + secrets.token_urlsafe(18) + "9aZ"
+        subprocess.run(["net", "user", "tunnel", password, "/add"], check=True, capture_output=True)
+        subprocess.run(["net", "localgroup", "Administrators", "tunnel", "/add"], check=True, capture_output=True)
+        env = dict(os.environ, DOJOY_JOIN_LIBRARY_ONLY="1")
+        powershell(f". {quote(path)}; Install-TerminalKey 'restrict,port-forwarding {tunnel_public} "
+                   "remote-term-tunnel-ci' 'remote-term-tunnel-ci'", env=env)
+        assert wait_for_tcp(host["ssh_port"], 90), (
+            "the SYSTEM-run tunnel never opened its port; tunnel log:\n"
+            + (Path(os.environ["ProgramData"]) / "remote-term" / "tunnel.log").read_text(errors="replace"))
+        login = subprocess.run([str(OPENSSH / "ssh.exe"), "-p", str(host["ssh_port"]), "-i", str(work / "full_terminal_key"),
+                                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL",
+                                f"{USER}@127.0.0.1", "whoami"], capture_output=True, text=True, timeout=60,
+                               encoding="utf-8", errors="replace")
+        print(login.stdout, login.stderr)
+        assert login.returncode == 0 and USER.lower() in login.stdout.lower(), "login through the tunnel failed"
+        print("tunnel: OK")
     finally:
         powershell(f"Get-ScheduledTask -TaskName {tasks} -ErrorAction SilentlyContinue | "
+                   "ForEach-Object { Stop-ScheduledTask -InputObject $_; $_ } | "
                    "Unregister-ScheduledTask -Confirm:$false", check=False)
+        subprocess.run(["net", "user", "tunnel", "/delete"], capture_output=True)
 
 
 def main():

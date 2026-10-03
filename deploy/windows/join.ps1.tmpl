@@ -42,8 +42,17 @@ function Protect-Path([string]$path) {
 }
 
 function Protect-File([string]$path) {
-    & icacls.exe $path /inheritance:r /grant "*${SystemSid}:F" "*${AdminsSid}:F" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls 设置权限失败：$path" }
+    # Replace the whole ACL: owner Administrators, access for SYSTEM and Administrators only.
+    # ssh-keygen gives the account that ran it its own entry; Windows OpenSSH then refuses the
+    # private key ("Bad permissions") when the SYSTEM-run tunnel uses it.
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier($AdminsSid)))
+    foreach ($sid in @($SystemSid, $AdminsSid)) {
+        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')))
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl
 }
 
 function Protect-SshdConfig([string]$config) {
