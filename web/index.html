@@ -29,10 +29,10 @@
     <section class="overview" id="overview" aria-labelledby="overviewTitle">
       <div class="overview-inner">
         <div class="overview-heading">
-          <div><h1 id="overviewTitle">运行概览</h1><p class="subtitle">各机每 30 秒上报一次 · 选择一台机器即可打开终端</p></div>
-          <button class="btn" id="refreshStatusBtn" type="button" title="读取服务器收到的最新上报，不会触发额外采集">读取最新</button>
+          <h1 id="overviewTitle">运行概览</h1>
+          <p class="status-notice" id="statusNotice" role="status">正在读取服务器运行情况…</p>
+          <button class="btn" id="refreshStatusBtn" type="button" title="各机每 30 秒上报一次；点这里读取入口机收到的最新上报，不会触发额外采集">读取最新</button>
         </div>
-        <p class="status-notice" id="statusNotice" role="status">正在读取服务器运行情况…</p>
         <div class="host-grid" id="hostGrid"></div>
       </div>
     </section>
