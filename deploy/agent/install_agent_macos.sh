@@ -6,7 +6,9 @@
 # You are asked for the token printed by `remote-term-admin token <id>` on the gateway.
 #
 # The agent only makes outbound HTTPS requests; it reports while you are logged in.
-set -euo pipefail
+set -Eeuo pipefail
+# Say which command stopped the script (the command as written: values are not expanded).
+trap 'echo "出错：$(basename "$0") 第 ${LINENO} 行：${BASH_COMMAND}" >&2' ERR
 # System tools first: /usr/local/bin may hold programs for another CPU (Intel Homebrew on Apple silicon).
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
@@ -14,6 +16,31 @@ usage() {
     sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
     exit 64
 }
+
+# --- start_launch_agent: the same in setup_mac.sh and install_agent_macos.sh ---
+# (Re)load a LaunchAgent. It may have been switched off (launchctl disable, or System Settings ->
+# General -> Login Items -> Allow in the Background), so switch it back on first. bootout can
+# return before launchd has let go of the old job, so bootstrap is retried for a while.
+start_launch_agent() {
+    local label=$1 plist=$2 domain attempt
+    domain="gui/$(id -u)"
+    launchctl bootout "$domain/$label" 2>/dev/null || true
+    launchctl enable "$domain/$label" 2>/dev/null || true
+    for attempt in 1 2 3 4 5; do
+        if launchctl bootstrap "$domain" "$plist" 2>/dev/null; then
+            return 0
+        fi
+        sleep "$attempt"
+    done
+    if launchctl bootstrap "$domain" "$plist"; then
+        return 0
+    fi
+    echo "无法启动后台服务 ${label}（launchctl 的报错见上一行）。" >&2
+    echo "请打开「系统设置 → 通用 → 登录项与扩展」，在「允许在后台」里打开 ssh、python3" >&2
+    echo "或带 dojoy / remote-term 字样的项目，然后再粘贴一次接入命令。" >&2
+    return 1
+}
+# --- end start_launch_agent ---
 
 url=""
 token_file=""
@@ -100,8 +127,7 @@ cat > "$plist" <<PLIST
 </plist>
 PLIST
 plutil -lint "$plist" >/dev/null
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist"
+start_launch_agent "$label" "$plist"
 
 # ${a[@]+...}: bash 3.2 (macOS) treats an empty array as unset under set -u.
 if PYTHONDONTWRITEBYTECODE=1 "$python" "$dir/agent.py" --url "$url" --token-file "$dir/token" \

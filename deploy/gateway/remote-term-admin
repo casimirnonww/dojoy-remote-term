@@ -330,26 +330,41 @@ cleanup() {
     case "$0" in /tmp/dojoy-join*.sh) rm -f -- "$0" ;; esac
 }
 trap cleanup EXIT
-printf '%s' "$BUNDLE" | /usr/bin/python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))'     | tar -xzf - -C "$work"
+step="准备"
+# On any failure say where it stopped; the lines above it give the reason.
+trap 'echo >&2; echo "接入没有完成：停在「${step}」这一步，原因见上面几行。" >&2; echo "需要帮助时，把从「== 正在接入」开始的输出发给 Claude（不要发接入命令本身）。" >&2' ERR
+printf '%s' "$BUNDLE" | /usr/bin/python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' \
+    | tar -xzf - -C "$work"
 
 echo "== 正在接入 ${HOST_NAME}（${HOST_ID}）=="
 if [ "$KIND" = linux ]; then
-    bash "$work/deploy/target/setup_ops_user.sh" --id "$HOST_ID" --pubkey "$TERMINAL_KEY"         --password-hash "$PASSWORD_HASH" >/dev/null
+    step="建立 ops 账户"
+    bash "$work/deploy/target/setup_ops_user.sh" --id "$HOST_ID" --pubkey "$TERMINAL_KEY" \
+        --password-hash "$PASSWORD_HASH" >/dev/null
     echo "已建立 ops 账户（sudo 密码就是安装入口机时设的 ops 密码）。"
-    printf '%s
-' "$TOKEN" | bash "$work/deploy/agent/install_agent_linux.sh" --url "$REPORT_URL" --token-stdin
+    step="安装上报程序"
+    printf '%s\n' "$TOKEN" | bash "$work/deploy/agent/install_agent_linux.sh" --url "$REPORT_URL" --token-stdin
+    step="向入口机登记"
     REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 "$work/status/agent.py" --enroll --url "$ENROLL_URL"
 else
-    bash "$work/deploy/target/setup_mac.sh" --id "$HOST_ID" --gateway "$GATEWAY" --tunnel-port "$TUNNEL_PORT"         --gateway-hostkey "$GATEWAY_HOSTKEY" --pubkey "$TERMINAL_KEY" --no-next-steps
-    (umask 077 && printf '%s
-' "$TOKEN" > "$work/token")
+    step="隧道和网页终端公钥"
+    bash "$work/deploy/target/setup_mac.sh" --id "$HOST_ID" --gateway "$GATEWAY" --tunnel-port "$TUNNEL_PORT" \
+        --gateway-hostkey "$GATEWAY_HOSTKEY" --pubkey "$TERMINAL_KEY" --no-next-steps
+    step="安装上报程序"
+    (umask 077 && printf '%s\n' "$TOKEN" > "$work/token")
     bash "$work/deploy/agent/install_agent_macos.sh" --url "$REPORT_URL" --token-file "$work/token"
+    step="向入口机登记"
+    # macOS makes its SSH host keys when sshd first answers; make sure they exist before enrolling.
+    if ! ls /etc/ssh/ssh_host_*_key.pub >/dev/null 2>&1; then
+        ssh-keyscan -T 5 127.0.0.1 >/dev/null 2>&1 || true
+    fi
     cafile=()
     if [ -r /etc/ssl/cert.pem ]; then cafile=(--cafile /etc/ssl/cert.pem); fi
-    REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 "$work/status/agent.py" --enroll         --url "$ENROLL_URL" --tunnel-key "$HOME/.ssh/id_ed25519_remote_term_tunnel.pub" ${cafile[@]+"${cafile[@]}"}
+    REMOTE_TERM_TOKEN="$TOKEN" PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 "$work/status/agent.py" --enroll \
+        --url "$ENROLL_URL" --tunnel-key "$HOME/.ssh/id_ed25519_remote_term_tunnel.pub" ${cafile[@]+"${cafile[@]}"}
 fi
 echo
-echo "完成：$HOST_NAME 已接入。大约 1 分钟后，在网页上就能看到它的状态并打开终端。"
+echo "完成：${HOST_NAME} 已接入。大约 1 分钟后，在网页上就能看到它的状态并打开终端。"
 """
 
 

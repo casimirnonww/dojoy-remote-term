@@ -475,6 +475,20 @@ class JoinScriptToolTests(unittest.TestCase):
                               (REPO / script).read_text(encoding="utf-8"))
 
 
+class MacLaunchAgentTests(unittest.TestCase):
+    def test_both_mac_scripts_load_agents_the_same_way(self):
+        def block(relative):
+            text = (REPO / relative).read_text(encoding="utf-8")
+            return text[text.index("# --- start_launch_agent"):text.index("# --- end start_launch_agent ---")]
+        self.assertEqual(block("deploy/target/setup_mac.sh"), block("deploy/agent/install_agent_macos.sh"))
+        for relative in ("deploy/target/setup_mac.sh", "deploy/agent/install_agent_macos.sh"):
+            with self.subTest(script=relative):
+                text = (REPO / relative).read_text(encoding="utf-8")
+                # Every load goes through the helper (it switches the agent back on and retries).
+                self.assertEqual(text.count('launchctl bootstrap "$domain" "$plist"'), 2)
+                self.assertNotIn('launchctl bootstrap "gui/', text)
+
+
 class JoinPythonCheckTests(unittest.TestCase):
     """The join script's first check: a Mac whose /usr/bin/python3 is Xcode's refuses to run it
     until the Xcode license is accepted; say that, not "install the developer tools"."""

@@ -8,7 +8,9 @@ gateway's name pointed at 127.0.0.1, and this machine's own sshd with a "tunnel"
 1. The join script runs to the end: terminal key, tunnel LaunchAgent, report LaunchAgent,
    first report (the receiver shows the Mac online), enrollment (host keys + tunnel key).
 2. It runs again at once, while the tunnel agent keeps failing and restarting (the gateway has
-   not authorized its key yet): what happens when someone pastes the command a second time.
+   not authorized its key yet), and with both agents switched off the way System Settings ->
+   Login Items -> "Allow in the Background" (or launchctl disable) leaves them: what happens
+   when someone pastes the command a second time.
 3. With the tunnel key authorized, the tunnel opens its port and the terminal key logs in
    through it.
 4. It runs a third time with the tunnel up, and the tunnel comes back.
@@ -23,6 +25,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -208,9 +211,23 @@ def run_join(script, attempt):
     assert not JOIN_PATH.exists(), "the join script did not remove itself (it holds the token)"
 
 
+def disable_agents():
+    """What switching the items off under Login Items (or launchctl disable) leaves behind."""
+    for label in LABELS:
+        run(["launchctl", "bootout", f"{DOMAIN_GUI}/{label}"], check=False)
+        run(["launchctl", "disable", f"{DOMAIN_GUI}/{label}"])
+    # For the record: a plain bootstrap (what the join did before) of a switched-off agent.
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{LABELS[0]}.plist"
+    result = run(["launchctl", "bootstrap", DOMAIN_GUI, plist], check=False)
+    print(f"plain bootstrap of a switched-off agent: exit {result.returncode}", flush=True)
+
+
 def check_installed(work, host):
     for label in LABELS:
         run(["launchctl", "print", f"{DOMAIN_GUI}/{label}"], check=True)
+    disabled = run(["launchctl", "print-disabled", DOMAIN_GUI]).stdout
+    for label in LABELS:
+        assert not re.search(rf'"{re.escape(label)}" => (disabled|true)', disabled), f"{label} is still switched off"
     keys = (Path.home() / ".ssh" / "authorized_keys").read_text()
     assert keys.count(f"remote-term-{host['id']}") == 1, keys
     row = status_row(host["id"])
@@ -291,7 +308,9 @@ def main():
         check_installed(work, host)
         assert run(["launchctl", "print", f"{DOMAIN_GUI}/{old}"], check=False).returncode != 0, \
             "the old tunnel is still running"
-        # Pasted again straight away, while the tunnel agent keeps failing and restarting.
+        # Pasted again straight away, while the tunnel agent keeps failing and restarting, and
+        # with both agents switched off in between.
+        disable_agents()
         run_join(script, 2)
         check_installed(work, host)
         create_tunnel_account(admin, host)
