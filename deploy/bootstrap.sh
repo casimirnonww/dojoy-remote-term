@@ -48,7 +48,7 @@ fetch() {
     fi
 }
 
-echo "==> 下载代码（$REPO，分支 $BRANCH）"
+echo "==> 下载代码（${REPO}，分支 ${BRANCH}）"
 download=$(mktemp -d)
 trap 'rm -rf "$download"' EXIT
 if ! fetch | tar -xz -C "$download"; then

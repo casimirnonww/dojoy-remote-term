@@ -401,5 +401,43 @@ class LegacyNginxTests(unittest.TestCase):
                 self.assertEqual(admin.is_public_ip(value), public)
 
 
+class MacBashTests(unittest.TestCase):
+    """macOS runs /bin/bash 3.2, which reads multibyte characters right after $NAME as part of the
+    name: "$HOST_NAME（" fails with "HOST_NAME?: unbound variable" under set -u."""
+
+    BARE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*(?=[^\x00-\x7f])")
+
+    def test_no_bare_variable_right_before_a_non_ascii_character(self):
+        sources = {str(path.relative_to(REPO)): path.read_text(encoding="utf-8")
+                   for path in sorted(REPO.rglob("*.sh")) if "archive" not in path.parts}
+        sources["deploy/gateway/remote-ttyd-ssh"] = (REPO / "deploy/gateway/remote-ttyd-ssh").read_text(encoding="utf-8")
+        sources["remote-term-admin JOIN_TEMPLATE"] = admin.JOIN_TEMPLATE
+        self.assertIn("deploy/target/setup_mac.sh", sources)
+        for name, text in sources.items():
+            for number, line in enumerate(text.splitlines(), 1):
+                with self.subTest(source=name, line=number):
+                    self.assertIsNone(self.BARE.search(line), f"use ${{NAME}} here: {line.strip()}")
+
+
+class JoinVersionTests(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.home)])
+        for relative in admin.JOIN_BUNDLE:
+            (self.home / relative).parent.mkdir(parents=True, exist_ok=True)
+            (self.home / relative).write_bytes((REPO / relative).read_bytes())
+        self.host = {host["id"]: host for host in load_hosts(REPO / "hosts.json")}["mba-chris"]
+
+    def test_same_code_and_settings_keep_the_link(self):
+        self.assertEqual(admin.join_version(self.home, self.host), admin.join_version(self.home, dict(self.host)))
+
+    def test_changed_code_or_settings_replace_the_link(self):
+        before = admin.join_version(self.home, self.host)
+        self.assertNotEqual(admin.join_version(self.home, dict(self.host, ssh_user="someone")), before)
+        with open(self.home / "deploy/target/setup_mac.sh", "a", encoding="utf-8") as script:
+            script.write("# changed\n")
+        self.assertNotEqual(admin.join_version(self.home, self.host), before)
+
+
 if __name__ == "__main__":
     unittest.main()

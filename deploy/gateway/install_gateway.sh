@@ -68,7 +68,7 @@ apt-get install -y -q -o Dpkg::Options::=--force-confold \
     nginx ttyd python3 certbot openssh-server curl ca-certificates openssl
 
 legacy="/var/backups/remote-term-legacy-$(date +%Y%m%dT%H%M%S)"
-step "停用旧系统（文件备份到 $legacy）"
+step "停用旧系统（文件备份到 ${legacy}）"
 # The old collector logged in to every host as root; it must not keep running.
 for unit in remote-term-status.timer remote-term-status.service; do
     if systemctl cat "$unit" >/dev/null 2>&1; then
@@ -148,7 +148,7 @@ install -d -m 750 -o root -g www-data /var/lib/remote-term-join
 step "ops 密码（所有 Linux 机器上 ops 的 sudo 密码，只设这一次）"
 hash_file=/etc/remote-term/ops-password.hash
 if [ -s "$hash_file" ]; then
-    echo "已设置过（$hash_file）。"
+    echo "已设置过（${hash_file}）。"
 else
     while true; do
         read -r -s -p "设置 ops 密码（至少 10 位，输入不显示）：" password
@@ -235,7 +235,7 @@ PY
     chmod 640 "$oauth_config.tmp"
     mv -f "$oauth_config.tmp" "$oauth_config"
 else
-    echo "保留已有的 $oauth_config（如要更换 GitHub 账号或 OAuth App，请直接编辑后重启 oauth2-proxy）。"
+    echo "保留已有的 ${oauth_config}（如要更换 GitHub 账号或 OAuth App，请直接编辑后重启 oauth2-proxy）。"
 fi
 
 step "TLS 证书（Let's Encrypt）"
