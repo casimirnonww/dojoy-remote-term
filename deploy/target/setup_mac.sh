@@ -16,6 +16,8 @@
 #     gateway's restricted "tunnel" account (pinned gateway host key);
 #   * prints what to run on the gateway next.
 set -euo pipefail
+# System tools first: /usr/local/bin may hold programs for another CPU (Intel Homebrew on Apple silicon).
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 usage() {
     sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'

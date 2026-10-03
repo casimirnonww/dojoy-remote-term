@@ -7,6 +7,8 @@
 #
 # The agent only makes outbound HTTPS requests; it reports while you are logged in.
 set -euo pipefail
+# System tools first: /usr/local/bin may hold programs for another CPU (Intel Homebrew on Apple silicon).
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 usage() {
     sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
@@ -41,7 +43,11 @@ else
     read -r -s -p "粘贴上报 token（输入不显示）：" token
     echo
 fi
-[[ "$token" =~ ^[A-Za-z0-9_-]{20,512}$ ]] || { echo "token 格式不对。" >&2; exit 64; }
+# Length is checked apart: macOS regex allows repeat counts up to 255 only ({20,512} never matches there).
+if ! [[ "$token" =~ ^[A-Za-z0-9_-]+$ ]] || [ "${#token}" -lt 20 ] || [ "${#token}" -gt 512 ]; then
+    echo "token 格式不对。" >&2
+    exit 64
+fi
 
 dir="$HOME/Library/Application Support/remote-term-agent"
 mkdir -p "$dir"

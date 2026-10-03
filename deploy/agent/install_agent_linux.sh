@@ -45,7 +45,11 @@ else
     echo "没有终端可输入 token；请用 --token-stdin。" >&2
     exit 64
 fi
-[[ "$token" =~ ^[A-Za-z0-9_-]{20,512}$ ]] || { echo "token 格式不对。" >&2; exit 64; }
+# Length is checked apart: macOS regex allows repeat counts up to 255 only ({20,512} never matches there).
+if ! [[ "$token" =~ ^[A-Za-z0-9_-]+$ ]] || [ "${#token}" -lt 20 ] || [ "${#token}" -gt 512 ]; then
+    echo "token 格式不对。" >&2
+    exit 64
+fi
 
 install -d -m 755 /opt/remote-term-agent
 install -m 644 "$repo/status/agent.py" "$repo/status/probe.py" /opt/remote-term-agent/
